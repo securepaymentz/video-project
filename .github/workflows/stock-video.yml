@@ -1,4 +1,4 @@
-# stock-engine v17 (installed by Studio)
+# stock-engine v19 (installed by Studio)
 name: Stock Clips Video
 
 on:
@@ -37,6 +37,13 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
           pip install requests edge-tts twikit google-auth google-auth-oauthlib google-api-python-client pillow
+
+      - name: Remember clips used in earlier videos
+        uses: actions/cache@v4
+        with:
+          path: /tmp/used-media
+          key: used-media-${{ github.run_id }}
+          restore-keys: used-media-
 
       - name: Build the video
         env:
