@@ -1,4 +1,4 @@
-# stock-engine v31 (installed by Studio)
+# stock-engine v32 (installed by Studio)
 name: Stock Clips Video
 
 on:
@@ -36,7 +36,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
-          pip install requests edge-tts twikit google-auth google-auth-oauthlib google-api-python-client pillow
+          pip install requests edge-tts twikit google-auth google-auth-oauthlib google-api-python-client pillow yt-dlp
           pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install transformers || true
 
       - name: Remember clips used in earlier videos
