@@ -1,4 +1,4 @@
-"""stock-engine v4 (installed by Studio)
+"""stock-engine v5 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -181,6 +181,11 @@ for i, sc in enumerate(plan["scenes"]):
         t += cd
     t0 += d
 
+# big hook question on the first seconds (e.g. "FEELING SQUEEZED?")
+hook = (plan.get("hook_question") or "").replace("{", "").replace("}", "").replace("\n", " ").strip().upper()
+if hook:
+    events.insert(0, f"Dialogue: 0,{ass_time(0)},{ass_time(min(4.0, t0))},Hook,,0,0,0,,{hook}")
+
 with open(os.path.join(work, "v.txt"), "w") as f:
     f.writelines(f"file '{s}'\n" for s in segments)
 with open(os.path.join(work, "a.txt"), "w") as f:
@@ -197,15 +202,24 @@ PlayResY: {H}
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Cap,DejaVu Sans,{fs},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,1,0,0,0,100,100,0,0,1,6,3,2,60,60,{margin},1
+Style: Hook,DejaVu Sans,{int(H * 0.085)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,1,0,0,0,100,100,0,0,1,5,2,1,70,70,{int(H * 0.16)},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """ + "\n".join(events) + "\n"
 open(os.path.join(work, "subs.ass"), "w", encoding="utf-8").write(ass)
 
-run(["ffmpeg", "-y", "-i", os.path.join(work, "video.mp4"), "-i", os.path.join(work, "voice.wav"),
-     "-vf", f"subtitles={os.path.join(work, 'subs.ass')}", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-     "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out])
+# brand frame (orange border, channel name, flag) overlaid on the whole video when present
+ov = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overlay.png")
+if os.path.exists(ov):
+    run(["ffmpeg", "-y", "-i", os.path.join(work, "video.mp4"), "-i", os.path.join(work, "voice.wav"), "-i", ov,
+         "-filter_complex", f"[0:v]subtitles={os.path.join(work, 'subs.ass')}[s];[2:v]scale={W}:{H}[fr];[s][fr]overlay=0:0[v]",
+         "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out])
+else:
+    run(["ffmpeg", "-y", "-i", os.path.join(work, "video.mp4"), "-i", os.path.join(work, "voice.wav"),
+         "-vf", f"subtitles={os.path.join(work, 'subs.ass')}", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out])
 
 desc = plan.get("description", "")
 if credits:
