@@ -1,4 +1,4 @@
-# stock-engine v2 (installed by Studio)
+# stock-engine v4 (installed by Studio)
 name: Stock Clips Video
 
 on:
@@ -42,6 +42,7 @@ jobs:
         env:
           PLAN: ${{ github.event.inputs.plan }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
