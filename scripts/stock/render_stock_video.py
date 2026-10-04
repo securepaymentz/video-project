@@ -1,4 +1,4 @@
-"""stock-engine v9 (installed by Studio)
+"""stock-engine v10 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -60,12 +60,12 @@ FOREIGN_WORDS = {"india", "indian", "mumbai", "delhi", "bangalore", "london", "e
 STOP = {"the", "a", "an", "of", "and", "in", "on", "for", "to", "with", "from", "usa", "us", "american", "america", "united", "states", "video", "photo", "footage", "cinematic", "slow", "motion", "drone", "aerial", "orbit", "360", "timelapse"}
 
 
-def words(s):
+def extract_words(s):
     return set(re.findall(r"[a-z0-9]+", str(s).lower()))
 
 
 def subject(q):
-    return words(q) - STOP
+    return extract_words(q) - STOP
 
 
 def search_terms(q):
@@ -91,7 +91,7 @@ def candidate_ok(query, metadata, location=""):
     places = {w for w in US_WORDS if " " in w and w != "united states" and re.search(r"\b" + re.escape(w) + r"\b", query.lower())}
     if places and not any(re.search(r"\b" + re.escape(w) + r"\b", text + " " + place) for w in places):
         return False
-    return not terms or bool(terms & words(text + " " + place))
+    return not terms or bool(terms & extract_words(text + " " + place))
 
 
 def find_photo(query):
@@ -460,10 +460,10 @@ for i, sc in enumerate(plan["scenes"]):
     run(["ffmpeg", "-y", "-i", a, "-af", "apad=pad_dur=0.25", "-t", f"{d:.2f}", "-ar", "44100", "-ac", "2", pad])
     segments.append(seg); audios.append(pad)
     # subtitles: chunks of ~4 words timed by word count
-    words = text.split()
-    chunks = [" ".join(words[k:k + 4]) for k in range(0, len(words), 4)] or [""]
+    scene_words = text.split()
+    chunks = [" ".join(scene_words[k:k + 4]) for k in range(0, len(scene_words), 4)] or [""]
     speak_d = d - 0.25
-    per = speak_d / max(1, len(words))
+    per = speak_d / max(1, len(scene_words))
     t = t0
     for c in chunks:
         cd = per * len(c.split())
