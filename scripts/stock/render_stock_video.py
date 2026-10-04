@@ -1,4 +1,4 @@
-"""stock-engine v11 (installed by Studio)
+"""stock-engine v12 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -21,7 +21,10 @@ if not PEXELS and not UNSPLASH and not PIXABAY:
 EDGE = {"es": "es-MX-JorgeNeural", "en": "en-US-GuyNeural", "pt": "pt-BR-AntonioNeural", "fr": "fr-FR-HenriNeural"}
 EL_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
 USE_EL = EL_KEY and os.environ.get("PREMIUM_VOICE", "true") != "false"
-EL_VOICE = os.environ.get("ELEVENLABS_VOICE_ID", "").strip() or "pNInz6obpgDQGcFmaJgB"
+EL_VOICE = str(plan.get("voice_id") or "").strip() or os.environ.get("ELEVENLABS_VOICE_ID", "").strip() or "pNInz6obpgDQGcFmaJgB"
+EDGE_FEMALE = {"es": "es-MX-DaliaNeural", "en": "en-US-JennyNeural", "pt": "pt-BR-FranciscaNeural", "fr": "fr-FR-DeniseNeural"}
+if plan.get("voice_gender") == "female":
+    EDGE = EDGE_FEMALE
 
 
 def run(cmd):
@@ -412,7 +415,9 @@ def render_visual(v, d, seg, i):
     return True
 
 t0 = 0.0
+starts = []
 for i, sc in enumerate(plan["scenes"]):
+    starts.append(t0)
     text = sc["text"].strip()
     a = os.path.join(work, f"a{i}.mp3"); speak(text, a)
     d = duration(a) + 0.25
@@ -478,6 +483,50 @@ with open(os.path.join(work, "a.txt"), "w") as f:
     f.writelines(f"file '{s}'\n" for s in audios)
 run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", os.path.join(work, "v.txt"), "-c", "copy", os.path.join(work, "video.mp4")])
 run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", os.path.join(work, "a.txt"), os.path.join(work, "voice.wav")])
+
+
+# Background music + transition sound effects (ElevenLabs). Any failure keeps the plain voice track.
+def el_audio(url, body, path):
+    try:
+        r = requests.post(url, headers={"xi-api-key": EL_KEY, "Content-Type": "application/json"}, json=body, timeout=180)
+        r.raise_for_status()
+        open(path, "wb").write(r.content)
+        return True
+    except Exception as e:
+        print("ElevenLabs audio skipped:", e)
+        return False
+
+if EL_KEY and plan.get("sfx", True):
+    total = duration(os.path.join(work, "voice.wav"))
+    mood = str(plan.get("music_mood") or "tense modern documentary underscore, deep pulse")
+    music = os.path.join(work, "music.mp3")
+    have_music = el_audio("https://api.elevenlabs.io/v1/music", {"prompt": mood + ", instrumental, no vocals, loopable", "music_length_ms": int(min(total, 300) * 1000) + 2000}, music) \
+        or el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": mood + ", instrumental background music loop, no vocals", "duration_seconds": 22, "loop": True, "prompt_influence": 0.5}, music)
+    whoosh = os.path.join(work, "whoosh.mp3")
+    have_whoosh = el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": "short fast cinematic whoosh transition swoosh", "duration_seconds": 0.8, "prompt_influence": 0.6}, whoosh)
+    hit = os.path.join(work, "hit.mp3")
+    have_hit = el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": "deep cinematic boom impact hit with riser tail", "duration_seconds": 1.5, "prompt_influence": 0.6}, hit)
+    inputs, filters, labels = ["-i", os.path.join(work, "voice.wav")], [], ["[0:a]"]
+    n = 1
+    if have_music:
+        inputs += ["-stream_loop", "-1", "-i", music]
+        filters.append(f"[{n}:a]atrim=0:{total:.2f},volume=0.12,afade=t=out:st={max(0, total - 2):.2f}:d=2[m]"); labels.append("[m]"); n += 1
+    if have_hit:
+        inputs += ["-i", hit]; filters.append(f"[{n}:a]volume=0.5[h]"); labels.append("[h]"); n += 1
+    if have_whoosh:
+        # A whoosh on every 2nd scene change keeps the pace up without getting annoying.
+        cuts = [s for j, s in enumerate(starts) if j > 0 and j % 2 == 0][:60]
+        for j, s in enumerate(cuts):
+            inputs += ["-i", whoosh]
+            ms = max(0, int((s - 0.3) * 1000))
+            filters.append(f"[{n}:a]volume=0.35,adelay={ms}|{ms}[w{j}]"); labels.append(f"[w{j}]"); n += 1
+    if n > 1:
+        filters.append("".join(labels) + f"amix=inputs={len(labels)}:duration=first:normalize=0[out]")
+        try:
+            run(["ffmpeg", "-y", *inputs, "-filter_complex", ";".join(filters), "-map", "[out]", "-ar", "44100", "-ac", "2", os.path.join(work, "mixed.wav")])
+            os.replace(os.path.join(work, "mixed.wav"), os.path.join(work, "voice.wav"))
+        except Exception as e:
+            print("Audio mix skipped:", e)
 
 margin = int(H * (0.28 if vertical else 0.1))
 ass = f"""[Script Info]
