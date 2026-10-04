@@ -1,0 +1,96 @@
+# stock-engine v2 (installed by Studio)
+name: Stock Clips Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      plan:
+        description: "Base64 JSON plan written by Studio (title, scenes, voice)"
+        type: string
+        required: true
+      premium_voice:
+        description: "Use ElevenLabs voice (off = free voice)"
+        type: boolean
+        default: true
+      upload:
+        description: "Upload to YouTube"
+        type: boolean
+        default: false
+      post_x:
+        description: "Post to X (shorts only)"
+        type: boolean
+        default: false
+      post_bluesky:
+        description: "Post to Bluesky (shorts only)"
+        type: boolean
+        default: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+          pip install requests edge-tts twikit google-auth google-auth-oauthlib google-api-python-client pillow
+
+      - name: Build the video
+        env:
+          PLAN: ${{ github.event.inputs.plan }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
+          PREMIUM_VOICE: ${{ github.event.inputs.premium_voice }}
+        run: python scripts/stock/render_stock_video.py /tmp/brand-video/daily-video.mp4
+
+      - name: Save the video as a download
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-video
+          path: |
+            /tmp/brand-video/daily-video.mp4
+            /tmp/brand-video/meta.json
+          retention-days: 30
+
+      - name: Upload to YouTube
+        id: youtube
+        if: ${{ github.event.inputs.upload == 'true' }}
+        continue-on-error: true
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          YOUTUBE_PRIVACY: ${{ secrets.YOUTUBE_PRIVACY || 'public' }}
+        run: |
+          if [ -z "$YOUTUBE_REFRESH_TOKEN" ]; then echo "No YouTube keys - skipping."; exit 0; fi
+          DIR=scripts/youtube; [ -f $DIR/upload_youtube.py ] || DIR=scripts/render
+          python $DIR/upload_youtube.py /tmp/brand-video/daily-video.mp4 /tmp/brand-video/meta.json | tee /tmp/brand-video/upload.log
+          URL=$(grep -o 'https://youtu.be/[A-Za-z0-9_-]*' /tmp/brand-video/upload.log | head -1)
+          echo "video_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Post to X
+        if: ${{ github.event.inputs.post_x == 'true' }}
+        continue-on-error: true
+        env:
+          X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
+          X_CT0: ${{ secrets.X_CT0 }}
+          VIDEO_URL: ${{ steps.youtube.outputs.video_url }}
+        run: |
+          DIR=scripts/youtube; [ -f $DIR/post_social.py ] || DIR=scripts/render
+          python $DIR/post_social.py twitter /tmp/brand-video/meta.json /tmp/brand-video/daily-video.mp4
+
+      - name: Post to Bluesky
+        if: ${{ github.event.inputs.post_bluesky == 'true' }}
+        continue-on-error: true
+        env:
+          BLUESKY_HANDLE: ${{ secrets.BLUESKY_HANDLE }}
+          BLUESKY_APP_PASSWORD: ${{ secrets.BLUESKY_APP_PASSWORD }}
+          VIDEO_URL: ${{ steps.youtube.outputs.video_url }}
+        run: |
+          DIR=scripts/youtube; [ -f $DIR/post_social.py ] || DIR=scripts/render
+          python $DIR/post_social.py bluesky /tmp/brand-video/meta.json /tmp/brand-video/daily-video.mp4
