@@ -1,4 +1,4 @@
-"""stock-engine v19 (installed by Studio)
+"""stock-engine v21 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -86,9 +86,44 @@ def _save_history():
 
 # Stock libraries have incomplete geographic metadata. Never infer anyone's
 # nationality from appearance; use search context and explicit location clues.
-US_WORDS = {"usa", "us", "american", "america", "united states", "new york", "los angeles", "las vegas", "chicago", "miami", "california", "texas", "florida", "washington", "boston", "philadelphia", "atlanta", "seattle", "detroit", "phoenix", "san francisco", "houston", "denver"}
 FOREIGN_WORDS = {"india", "indian", "mumbai", "delhi", "bangalore", "london", "england", "united kingdom", "paris", "france", "berlin", "germany", "tokyo", "japan", "china", "beijing", "dubai", "uae", "brazil", "sao paulo", "mexico", "canada", "toronto", "australia", "sydney", "russia", "moscow", "pakistan", "indonesia", "italy", "rome", "spain", "madrid", "south africa", "africa", "europe", "asia"}
-STOP = {"the", "a", "an", "of", "and", "in", "on", "for", "to", "with", "from", "usa", "us", "american", "america", "united", "states", "video", "photo", "footage", "cinematic", "slow", "motion", "drone", "aerial", "orbit", "360", "timelapse"}
+GENERIC_US = {"usa", "us", "american", "america", "united states"}
+STATES = {"alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts", "michigan", "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey", "new mexico", "new york", "north carolina", "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina", "south dakota", "tennessee", "texas", "utah", "vermont", "virginia", "washington", "west virginia", "wisconsin", "wyoming"}
+CITIES = {"los angeles", "las vegas", "chicago", "miami", "boston", "philadelphia", "atlanta", "seattle", "detroit", "phoenix", "san francisco", "houston", "denver", "dallas", "austin", "san diego", "san jose", "portland", "nashville", "orlando", "tampa", "baltimore", "pittsburgh", "cleveland", "minneapolis", "st louis", "new orleans", "salt lake city", "charlotte", "raleigh", "kansas city", "sacramento", "burlington", "manhattan", "brooklyn", "honolulu", "anchorage", "albuquerque", "tucson", "columbus", "indianapolis", "milwaukee", "memphis", "louisville", "richmond", "hartford", "providence", "newark", "oakland", "san antonio", "el paso", "omaha", "boise", "reno", "spokane", "silicon valley", "hollywood", "times square", "new england", "midwest"}
+US_WORDS = GENERIC_US | STATES | CITIES
+# A named place may also show close neighbours (e.g. Vermont -> New England / Boston).
+NEAR = {"vermont": {"new england", "burlington", "boston", "new hampshire", "maine"}, "new hampshire": {"new england", "boston", "vermont", "maine"},
+        "maine": {"new england", "portland"}, "massachusetts": {"boston", "new england"}, "boston": {"massachusetts", "new england"},
+        "new york": {"manhattan", "brooklyn", "times square"}, "california": {"los angeles", "san francisco", "san diego", "hollywood", "silicon valley", "oakland", "sacramento", "san jose"},
+        "texas": {"dallas", "houston", "austin", "san antonio", "el paso"}, "florida": {"miami", "orlando", "tampa"}, "washington": {"seattle", "spokane"}}
+# Specific subjects must be present literally (or a true synonym); generic words like "car" alone never qualify.
+ANCHORS = {"dealership": {"dealership", "dealer", "dealers", "showroom", "dealerships"}, "dealer": {"dealership", "dealer", "showroom"},
+           "showroom": {"showroom", "dealership", "dealer"}, "hospital": {"hospital", "clinic", "emergency", "medical"},
+           "supermarket": {"supermarket", "grocery", "groceries", "store"}, "grocery": {"grocery", "groceries", "supermarket"},
+           "groceries": {"grocery", "groceries", "supermarket"}, "pharmacy": {"pharmacy", "drugstore", "pharmacist"},
+           "restaurant": {"restaurant", "diner", "cafe"}, "factory": {"factory", "manufacturing", "plant", "assembly"},
+           "school": {"school", "classroom", "students"}, "university": {"university", "college", "campus"},
+           "homeless": {"homeless", "homelessness", "tent", "encampment"}, "gas": {"gas", "fuel", "pump", "gasoline"},
+           "mortgage": {"mortgage", "house", "home", "realtor"}, "warehouse": {"warehouse", "logistics"}}
+MED = {"doctor", "doctors", "physician", "surgeon", "nurse", "nurses", "patient", "patients", "hospital", "clinic", "medical", "healthcare", "health", "medicine", "stethoscope", "surgery"}
+for _w in ("doctor", "doctors", "physician", "physicians", "surgeon", "surgeons", "nurse", "nurses", "patient", "patients", "clinic", "medical", "healthcare"):
+    ANCHORS[_w] = MED
+ANCHORS["taxi"] = {"taxi", "cab", "taxicab", "rideshare"}
+# Medical/insurance scenes never show street traffic unless the script is about ambulances.
+MED_TRIGGERS = MED | {"insurance", "hospital", "pharmacy"}
+MED_BLOCK = {"taxi", "cab", "taxicab", "traffic", "pedestrian", "pedestrians", "vehicle", "vehicles", "car", "cars", "street", "highway", "road"}
+STOP = {"the", "a", "an", "of", "and", "in", "on", "for", "to", "with", "from", "usa", "us", "american", "america", "united", "states", "video", "photo", "footage", "cinematic", "slow", "motion", "drone", "aerial", "orbit", "360", "timelapse", "exterior", "interior", "people", "view", "shot", "close", "up"}
+
+
+def has_word(w, text):
+    return re.search(r"\b" + re.escape(w) + r"\b", text) is not None
+
+
+def named_places(q):
+    q = q.lower()
+    found = {w for w in (STATES | CITIES) if has_word(w, q)}
+    # "new york" contains "york"; drop places contained in longer matches
+    return {w for w in found if not any(w != o and w in o for o in found)}
 
 
 def extract_words(s):
@@ -96,38 +131,87 @@ def extract_words(s):
 
 
 def subject(q):
-    return extract_words(q) - STOP
+    place_words = set()
+    for p in named_places(q):
+        place_words |= set(p.split())
+    return extract_words(q) - STOP - place_words
 
 
 def search_terms(q):
     q = str(q or "").strip()[:85]
     if not q or not subject(q):
         return []
-    has_us = any(re.search(r"\b" + re.escape(w) + r"\b", q.lower()) for w in US_WORDS)
+    has_us = any(has_word(w, q.lower()) for w in US_WORDS)
     return [q] if has_us else [q + " USA", q + " United States"]
 
 
 def candidate_ok(query, metadata, location=""):
-    text = str(metadata or "").lower()
+    text = str(metadata or "").lower().replace("-", " ")
     place = str(location or "").lower()
-    if any(re.search(r"\b" + re.escape(w) + r"\b", text + " " + place) for w in FOREIGN_WORDS):
+    both = text + " " + place
+    if any(has_word(w, both) for w in FOREIGN_WORDS):
         return False
     # Search rank is not proof of filming location; require an explicit US clue.
-    if not any(re.search(r"\b" + re.escape(w) + r"\b", text + " " + place) for w in US_WORDS):
+    if not any(has_word(w, both) for w in US_WORDS):
         return False
-    if place and not any(re.search(r"\b" + re.escape(w) + r"\b", place) for w in US_WORDS):
+    if place and not any(has_word(w, place) for w in US_WORDS):
         return False
+    # Named state/city: the clip must show that place (or a close neighbour), never another US city.
+    places = named_places(query)
+    if places:
+        ok = set(places)
+        for p in places:
+            ok |= NEAR.get(p, set())
+        if not any(has_word(w, both) for w in ok):
+            return False
+    words = extract_words(both)
     terms = subject(query)
-    # When the script names a city, a different American city is still wrong.
-    places = {w for w in US_WORDS if " " in w and w != "united states" and re.search(r"\b" + re.escape(w) + r"\b", query.lower())}
-    if places and not any(re.search(r"\b" + re.escape(w) + r"\b", text + " " + place) for w in places):
+    qw = extract_words(query)
+    if (qw & MED_TRIGGERS) and not (qw & {"ambulance", "paramedic", "emergency"}) and (words & MED_BLOCK):
         return False
-    return not terms or bool(terms & extract_words(text + " " + place))
+    # Exact subject: anchor nouns (dealership, hospital...) must appear themselves or as a true synonym.
+    for t in terms:
+        if t in ANCHORS and not (ANCHORS[t] & words):
+            return False
+    if not terms:
+        return True
+    hit = len(terms & words)
+    # Multi-word subjects need at least two matching words, so "car" alone can't stand in for "car dealership".
+    return hit >= min(2, len(terms))
+
 
 
 def find_photo(query):
-    if not UNSPLASH:
-        return None, None
+    srcs = [f for f, k in ((find_unsplash, UNSPLASH), (find_pixabay_photo, PIXABAY)) if k]
+    random.shuffle(srcs)
+    for f in srcs:
+        try:
+            url, author = f(query)
+        except Exception as e:
+            print("Photo search error", e); continue
+        if url:
+            return url, author
+    return None, None
+
+
+def find_pixabay_photo(query):
+    for q in search_terms(query):
+        r = requests.get("https://pixabay.com/api/", params={"key": PIXABAY, "q": q[:100], "image_type": "photo", "per_page": 30,
+                         "orientation": "vertical" if vertical else "horizontal", "safesearch": "true", "min_width": 1280,
+                         "order": random.choice(["popular", "latest"])}, timeout=30)
+        if r.status_code != 200:
+            print("Pixabay photo error", r.status_code, r.text[:200]); continue
+        hits = [h for h in r.json().get("hits", []) if ("pbi", h["id"]) not in used and candidate_ok(query, h.get("tags", ""))]
+        hits.sort(key=lambda h: (seen(("pbi", h["id"])), random.random()))
+        for h in hits:
+            url = h.get("largeImageURL") or h.get("webformatURL")
+            if not url: continue
+            used.add(("pbi", h["id"]))
+            return url, (h.get("user") or "Pixabay") + " (Pixabay)"
+    return None, None
+
+
+def find_unsplash(query):
     orient = "portrait" if vertical else "landscape"
     for q in search_terms(query):
         r = requests.get("https://api.unsplash.com/search/photos", headers={"Authorization": f"Client-ID {UNSPLASH}"},
@@ -930,7 +1014,8 @@ def render_visual(v, d, seg, i):
     has_bg = False
     # Never a black screen: try the scene's subject, then the video's theme, then generic US money/city footage.
     tries = [] if v.get("_nobg") else [v.get("query")]
-    tries += [plan.get("fallback_query"), "american people shopping", "united states city street", "money cash dollars"]
+    # Theme fallbacks stay on-topic (no generic street shots that end up showing taxis).
+    tries += [plan.get("fallback_query"), "money cash dollars"]
     for q_ in [x for x in tries if x]:
         try:
             if make_footage(i, q_, d + 0.1, bg, False) or make_footage(i, q_, d + 0.1, bg, True):
@@ -954,7 +1039,7 @@ def make_footage(i, q, d, seg, want_photo):
     vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1"
     link, author = (None, None) if want_photo else find_clip(q, d)
     if not link and i < 3:
-        for alt in (plan.get("fallback_query", ""), "american city aerial", "united states street", "new york city traffic"):
+        for alt in (plan.get("fallback_query", ""),):
             if alt and not link:
                 link, author = find_clip(alt, d)
     if link:
@@ -995,7 +1080,7 @@ def make_footage(i, q, d, seg, want_photo):
             run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-t", f"{d:.2f}",
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
         return True
-    if UNSPLASH:
+    if UNSPLASH or PIXABAY:
         url, author = find_photo(q)
         if url:
             img = os.path.join(work, f"i{i}_{int(d * 100)}.jpg")
