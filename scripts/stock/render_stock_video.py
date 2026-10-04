@@ -1,4 +1,4 @@
-"""stock-engine v2 (installed by Studio)
+"""stock-engine v4 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -13,9 +13,10 @@ vertical = plan.get("aspect", "9:16") == "9:16"
 W, H = (1080, 1920) if vertical else (1920, 1080)
 lang = plan.get("language", "es")
 PEXELS = os.environ.get("PEXELS_API_KEY", "").strip()
+PIXABAY = os.environ.get("PIXABAY_API_KEY", "").strip()
 UNSPLASH = os.environ.get("UNSPLASH_ACCESS_KEY", "").strip()
-if not PEXELS and not UNSPLASH:
-    sys.exit("Add a Pexels or Unsplash key in Studio and click 'Send keys to GitHub'.")
+if not PEXELS and not UNSPLASH and not PIXABAY:
+    sys.exit("Add a Pixabay, Pexels or Unsplash key in Studio and click 'Send keys to GitHub'.")
 
 EDGE = {"es": "es-MX-JorgeNeural", "en": "en-US-GuyNeural", "pt": "pt-BR-AntonioNeural", "fr": "fr-FR-HenriNeural"}
 EL_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
@@ -71,9 +72,38 @@ def find_photo(query):
     return None, None
 
 
-def find_clip(query, need):
-    if not PEXELS:
+def find_pixabay(query, need):
+    if not PIXABAY:
         return None, None
+    for q in [query, " ".join(query.split()[:2]), plan.get("fallback_query", "city")]:
+        try:
+            r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY, "q": q[:100], "per_page": 30,
+                             "safesearch": "true", "order": "popular"}, timeout=30)
+        except Exception as e:
+            print("Pixabay error", e); continue
+        if r.status_code != 200:
+            print("Pixabay error", r.status_code, r.text[:200]); continue
+        hits = []
+        for v in r.json().get("hits", []):
+            if ("pb", v["id"]) in used: continue
+            vs = v.get("videos", {})
+            opts = [f for f in (vs.get("large"), vs.get("medium"), vs.get("small")) if f and f.get("url") and f.get("width")]
+            if not opts: continue
+            f = opts[0]
+            is_v = f["height"] > f["width"]
+            hits.append((is_v != vertical, v.get("duration", 0) < need, random.random(), v, f))
+        hits.sort(key=lambda h: h[:3])
+        if hits:
+            _, _, _, v, f = hits[0]
+            used.add(("pb", v["id"]))
+            return f["url"], (v.get("user") or "Pixabay") + " (Pixabay)"
+    return None, None
+
+
+def find_clip(query, need):
+    link, author = find_pixabay(query, need)
+    if link or not PEXELS:
+        return link, author
     orient = "portrait" if vertical else "landscape"
     for q in [query, " ".join(query.split()[:2]), plan.get("fallback_query", "city")]:
         r = requests.get("https://api.pexels.com/videos/search", headers={"Authorization": PEXELS},
@@ -88,7 +118,7 @@ def find_clip(query, need):
             target = H if vertical else W
             files.sort(key=lambda f: abs((f["height"] if vertical else f["width"]) - target))
             used.add(v["id"])
-            return files[0]["link"], v.get("user", {}).get("name", "Pexels")
+            return files[0]["link"], v.get("user", {}).get("name", "Pexels") + " (Pexels)"
     return None, None
 
 
@@ -105,7 +135,9 @@ for i, sc in enumerate(plan["scenes"]):
     text = sc["text"].strip()
     a = os.path.join(work, f"a{i}.mp3"); speak(text, a)
     d = duration(a) + 0.25
-    link, author = find_clip(sc.get("query", plan.get("fallback_query", "city")), d)
+    # Mix: first 2 scenes always video; afterwards every 3rd scene is a photo (~70% video)
+    want_photo = UNSPLASH and i >= 2 and i % 3 == 2
+    link, author = (None, None) if want_photo else find_clip(sc.get("query", plan.get("fallback_query", "city")), d)
     seg = os.path.join(work, f"s{i}.mp4")
     vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1"
     if link:
@@ -177,7 +209,7 @@ run(["ffmpeg", "-y", "-i", os.path.join(work, "video.mp4"), "-i", os.path.join(w
 
 desc = plan.get("description", "")
 if credits:
-    desc += "\n\nVideos: " + ", ".join(sorted(credits)) + " via Pexels"
+    desc += "\n\nVideos: " + ", ".join(sorted(credits))
 if photo_credits:
     desc += "\n\nPhotos: " + ", ".join(sorted(photo_credits)) + " on Unsplash"
 meta = {"title": plan.get("title", "")[:100], "description": desc, "tags": plan.get("tags", [])}
