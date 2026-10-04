@@ -1,4 +1,4 @@
-"""stock-engine v25 (installed by Studio)
+"""stock-engine v27 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -190,6 +190,62 @@ def candidate_ok(query, metadata, location=""):
 
 
 
+# ---- Visual AI check (CLIP, free, runs on the GitHub machine): looks at each thumbnail and scores how well
+# it actually shows the scene, so a "cars" sentence never gets a photo camera just because of a bad tag.
+_clip = None
+def clip_model():
+    global _clip
+    if _clip is None:
+        try:
+            from transformers import CLIPModel, CLIPProcessor
+            _clip = (CLIPModel.from_pretrained("openai/clip-vit-base-patch32").eval(), CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32"))
+        except Exception as e:
+            print("Visual AI check unavailable:", e); _clip = False
+    return _clip
+
+
+NEG = ["a camera", "a smartphone screen", "text on a page", "an abstract background", "a logo", "a cartoon illustration", "an empty sky"]
+
+
+def clip_rank(query, items, thumb):
+    """items: candidates already passing tag rules. Returns them best-first, dropping ones that don't show the subject."""
+    m = clip_model()
+    if not m or not items:
+        return items
+    try:
+        import io, torch
+        from PIL import Image
+        model, proc = m
+        subj = " ".join(sorted(subject(query))) or query
+        prompts = [f"a photo of {query}", f"a photo of {subj}"] + [f"a photo of {n}" for n in NEG if not (extract_words(n) & subject(query))]
+        imgs, keep = [], []
+        for it in items[:10]:
+            try:
+                u = thumb(it)
+                if not u: continue
+                imgs.append(Image.open(io.BytesIO(requests.get(u, timeout=20).content)).convert("RGB")); keep.append(it)
+            except Exception:
+                continue
+        if not imgs:
+            return items
+        with torch.no_grad():
+            out = model(**proc(text=prompts, images=imgs, return_tensors="pt", padding=True))
+            probs = out.logits_per_image.softmax(dim=1)
+            sims = out.logits_per_image / model.logit_scale.exp()
+        scored = []
+        for k, it in enumerate(keep):
+            on = float(probs[k][0] + probs[k][1]); sim = float(max(sims[k][0], sims[k][1]))
+            if on >= 0.5 and sim >= 0.22:
+                scored.append((-(sim + 0.05 * on), it))
+            else:
+                print(f"Visual AI rejected a result for '{query}' (match {sim:.2f})")
+        scored.sort(key=lambda x: x[0])
+        return [it for _, it in scored]
+    except Exception as e:
+        print("Visual AI check skipped:", e)
+        return items
+
+
 def find_photo(query):
     srcs = [f for f, k in ((find_unsplash, UNSPLASH), (find_pixabay_photo, PIXABAY)) if k]
     random.shuffle(srcs)
@@ -212,6 +268,7 @@ def find_pixabay_photo(query):
             print("Pixabay photo error", r.status_code, r.text[:200]); continue
         hits = [h for h in r.json().get("hits", []) if ("pbi", h["id"]) not in used and candidate_ok(query, h.get("tags", ""))]
         hits.sort(key=lambda h: (seen(("pbi", h["id"])), random.random()))
+        hits = clip_rank(query, hits, lambda h: h.get("webformatURL") or h.get("previewURL"))
         for h in hits:
             url = h.get("largeImageURL") or h.get("webformatURL")
             if not url: continue
@@ -229,9 +286,11 @@ def find_unsplash(query):
             print("Unsplash error", r.status_code, r.text[:200]); continue
         res = r.json().get("results", [])
         res.sort(key=lambda ph: (seen(("us", ph["id"])), random.random()))
-        for ph in res:
+        def _ok(ph):
             metadata = " ".join(str(ph.get(k) or "") for k in ("description", "alt_description", "slug")) + " " + " ".join(str(t.get("title") or "") for t in ph.get("tags", []))
-            if ("us", ph["id"]) in used or not candidate_ok(query, metadata, ph.get("location", {}).get("name") if isinstance(ph.get("location"), dict) else ""): continue
+            return ("us", ph["id"]) not in used and candidate_ok(query, metadata, ph.get("location", {}).get("name") if isinstance(ph.get("location"), dict) else "")
+        res = clip_rank(query, [ph for ph in res if _ok(ph)], lambda ph: ph.get("urls", {}).get("small"))
+        for ph in res:
             used.add(("us", ph["id"]))
             try:  # Unsplash guidelines: report the download
                 requests.get(ph["links"]["download_location"], headers={"Authorization": f"Client-ID {UNSPLASH}"}, timeout=15)
@@ -262,6 +321,7 @@ def find_pixabay(query, need):
             is_v = f["height"] > f["width"]
             hits.append((is_v != vertical, seen(("pb", v["id"])), v.get("duration", 0) < need, random.random(), v, f))
         hits.sort(key=lambda h: h[:4])
+        hits = clip_rank(query, hits, lambda h: (h[4].get("videos", {}).get("medium") or {}).get("thumbnail") or (h[4].get("videos", {}).get("small") or {}).get("thumbnail"))
         if hits:
             v, f = hits[0][4], hits[0][5]
             used.add(("pb", v["id"]))
@@ -281,6 +341,7 @@ def find_clip(query, need):
             print("Pexels error", r.status_code, r.text[:200]); continue
         vids = [v for v in r.json().get("videos", []) if ("px", v["id"]) not in used and candidate_ok(query, v.get("url", "").split("/video/")[-1])]
         vids.sort(key=lambda v: (seen(("px", v["id"])), v.get("duration", 0) < need, random.random()))
+        vids = clip_rank(query, vids, lambda v: v.get("image"))
         for v in vids:
             files = [f for f in v["video_files"] if f.get("file_type") == "video/mp4" and f.get("height")]
             if not files: continue
@@ -1109,10 +1170,84 @@ def make_footage(i, q, d, seg, want_photo):
     return False
 
 
+# ---- HeyGen reporter (Avatar III): ONE clip per video, filmed "on location" for this topic, repeated a few times ----
+HG_KEY = os.environ.get("HEYGEN_API_KEY", "").strip()
+HG_AVATAR = os.environ.get("HEYGEN_AVATAR_ID", "").strip()
+HG_TYPE = os.environ.get("HEYGEN_AVATAR_TYPE", "").strip().lower()
+reporter_seg = reporter_aud = None
+reporter_d = 0.0
+rep = plan.get("reporter") or {}
+if HG_KEY and rep.get("line") and plan.get("reporter_on", True):
+    try:
+        hh = {"X-Api-Key": HG_KEY, "Content-Type": "application/json"}
+        vid = os.environ.get("HEYGEN_VOICE_ID", "").strip()
+        if not vid:
+            want = "female" if plan.get("voice_gender") == "female" else "male"
+            vs = requests.get("https://api.heygen.com/v2/voices", headers=hh, timeout=60).json().get("data", {}).get("voices", [])
+            en = [v for v in vs if str(v.get("language", "")).lower().startswith("english")]
+            pick = [v for v in en if str(v.get("gender", "")).lower() == want] or en or vs
+            vid = pick[0]["voice_id"]
+        if not HG_AVATAR:
+            # no Avatar ID saved: rotate through HeyGen's stock Avatar III presenters of the narrator's gender
+            want_g = "female" if plan.get("voice_gender") == "female" else "male"
+            av = requests.get("https://api.heygen.com/v2/avatars", headers=hh, timeout=60).json().get("data", {}).get("avatars", [])
+            av = [a for a in av if not a.get("premium")] or av
+            pool = [a for a in av if str(a.get("gender", "")).lower() == want_g] or av
+            HG_AVATAR = random.choice(pool[:40])["avatar_id"]; HG_TYPE = "avatar"
+        bg_url, _a = find_photo(str(rep.get("setting") or plan.get("fallback_query", "american office")))
+        char = {"type": "talking_photo", "talking_photo_id": HG_AVATAR} if "photo" in HG_TYPE else {"type": "avatar", "avatar_id": HG_AVATAR, "avatar_style": "normal"}
+        vin = {"character": char, "voice": {"type": "text", "input_text": str(rep["line"])[:220], "voice_id": vid}}
+        if bg_url:
+            vin["background"] = {"type": "image", "url": bg_url}
+        dim = {"width": 720, "height": 1280} if vertical else {"width": 1280, "height": 720}
+        r = requests.post("https://api.heygen.com/v2/video/generate", headers=hh, json={"video_inputs": [vin], "dimension": dim}, timeout=60)
+        r.raise_for_status()
+        hg_id = r.json()["data"]["video_id"]
+        import time
+        hg_url = None
+        for _ in range(120):  # up to ~20 min
+            time.sleep(10)
+            st = requests.get(f"https://api.heygen.com/v1/video_status.get?video_id={hg_id}", headers=hh, timeout=60).json().get("data", {})
+            if st.get("status") == "completed":
+                hg_url = st.get("video_url"); break
+            if st.get("status") == "failed":
+                raise RuntimeError(f"HeyGen failed: {st.get('error')}")
+        if not hg_url:
+            raise RuntimeError("HeyGen took too long")
+        rawh = os.path.join(work, "reporter_raw.mp4")
+        open(rawh, "wb").write(requests.get(hg_url, timeout=180).content)
+        reporter_seg = os.path.join(work, "reporter.mp4")
+        run(["ffmpeg", "-y", "-i", rawh, "-an", "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", reporter_seg])
+        reporter_aud = os.path.join(work, "reporter.wav")
+        run(["ffmpeg", "-y", "-i", rawh, "-vn", "-ar", "44100", "-ac", "2", reporter_aud])
+        reporter_d = min(duration(reporter_seg), duration(reporter_aud))
+        print(f"Reporter clip ready ({reporter_d:.1f}s) at: {rep.get('setting')}")
+    except Exception as e:
+        print("Reporter skipped:", e)
+        reporter_seg = None
+
+n_sc = len(plan["scenes"])
+rep_at = set()
+if reporter_seg:
+    rep_at = {1, n_sc - 1} if n_sc < 12 else {1, n_sc // 2, n_sc - 1}
+    rep_at = {k for k in rep_at if 0 < k < n_sc}
+
 t0 = 0.0
 starts = []
 gfx_starts = []
 for i, sc in enumerate(plan["scenes"]):
+    if i in rep_at:
+        # same reporter clip again (frame + captions get burned on top later)
+        segments.append(reporter_seg); audios.append(reporter_aud)
+        rw = str(rep["line"]).split()
+        per_r = reporter_d / max(1, len(rw)); tr = t0
+        for k in range(0, len(rw), 4):
+            c = " ".join(rw[k:k + 4]); cd = per_r * len(c.split())
+            events.append(f"Dialogue: 0,{ass_time(tr)},{ass_time(tr + cd)},Cap,,0,0,0,,{c.upper()}")
+            tr += cd
+        gfx_starts.append(t0)
+        t0 += reporter_d
     starts.append(t0)
     text = sc["text"].strip()
     a = os.path.join(work, f"a{i}.mp3"); speak(text, a)
@@ -1191,35 +1326,72 @@ def el_audio(url, body, path):
 
 if EL_KEY and plan.get("sfx", True):
     total = duration(os.path.join(work, "voice.wav"))
-    mood = str(plan.get("music_mood") or "tense modern documentary underscore, deep pulse")
+    rng = random.Random()
+    # Every video gets its own sound identity: a music style + a matching SFX pack, picked at random.
+    STYLES = [
+        "modern trap-documentary beat, deep 808, crisp hi-hats, dark synth pads, building tension",
+        "cinematic hybrid trailer pulse, ticking clock, low strings, big drums",
+        "lo-fi hip hop with punchy kick, warm keys, investigative mood",
+        "dark electronic news underscore, driving bassline, arpeggiated synths",
+        "uplifting corporate funk groove, slap bass, claps, confident and catchy",
+        "minimal piano and pizzicato strings, curious suspense, light percussion",
+        "synthwave documentary groove, retro drums, pulsing bass",
+        "gritty boom bap beat, vinyl crackle, serious street-level reportage",
+        "epic orchestral tension with modern percussion hits",
+        "future bass underscore, energetic, plucks and sidechained pads",
+    ]
+    PACKS = [
+        {"cut": "fast cinematic air whoosh swoosh", "hit": "deep sub boom impact with reverb tail", "pop": "clean UI pop ding", "riser": "short tension riser into hit"},
+        {"cut": "glitchy digital swipe transition", "hit": "heavy trailer braam hit", "pop": "soft bubble pop click", "riser": "reverse cymbal swell"},
+        {"cut": "tape stop rewind transition", "hit": "punchy 808 drum drop", "pop": "cash register ka-ching", "riser": "noise sweep riser"},
+        {"cut": "camera shutter flash whoosh", "hit": "orchestral timpani hit", "pop": "typewriter key ding", "riser": "string swell riser"},
+        {"cut": "quick paper swipe swoosh", "hit": "news broadcast stinger sting", "pop": "notification chime", "riser": "rising synth sweep"},
+    ]
+    style = rng.choice(STYLES)
+    pack = rng.choice(PACKS)
+    mood = str(plan.get("music_mood") or "").strip()
+    prompt = (mood + ", " if mood else "") + style
+    print("Sound identity:", prompt, "|", pack["cut"])
     music = os.path.join(work, "music.mp3")
-    have_music = el_audio("https://api.elevenlabs.io/v1/music", {"prompt": mood + ", instrumental, no vocals, loopable", "music_length_ms": int(min(total, 300) * 1000) + 2000}, music) \
-        or el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": mood + ", instrumental background music loop, no vocals", "duration_seconds": 22, "loop": True, "prompt_influence": 0.5}, music)
-    whoosh = os.path.join(work, "whoosh.mp3")
-    have_whoosh = el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": "short fast cinematic whoosh transition swoosh", "duration_seconds": 0.8, "prompt_influence": 0.6}, whoosh)
-    hit = os.path.join(work, "hit.mp3")
-    have_hit = el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": "deep cinematic boom impact hit with riser tail", "duration_seconds": 1.5, "prompt_influence": 0.6}, hit)
-    pop = os.path.join(work, "pop.mp3")
-    have_pop = bool(gfx_starts) and el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": "short clean UI pop ding notification for on-screen graphic", "duration_seconds": 0.6, "prompt_influence": 0.6}, pop)
-    inputs, filters, labels = ["-i", os.path.join(work, "voice.wav")], [], ["[0:a]"]
+    have_music = el_audio("https://api.elevenlabs.io/v1/music", {"prompt": prompt + ", instrumental, no vocals, energetic intro, evolving sections, loopable", "music_length_ms": int(min(total, 300) * 1000) + 2000}, music) \
+        or el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": prompt + ", instrumental background music loop, no vocals", "duration_seconds": 22, "loop": True, "prompt_influence": 0.5}, music)
+    sfx = {}
+    for k, dur in (("cut", 0.8), ("cut2", 0.8), ("hit", 1.5), ("riser", 2.0), ("pop", 0.6)):
+        text = pack["cut"] + ", variation two" if k == "cut2" else pack[k]
+        if k == "pop" and not gfx_starts:
+            continue
+        fp = os.path.join(work, f"sfx_{k}.mp3")
+        if el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": "short " + text + ", sound effect", "duration_seconds": dur, "prompt_influence": 0.65}, fp):
+            sfx[k] = fp
+    inputs, filters, labels = ["-i", os.path.join(work, "voice.wav")], ["[0:a]asplit=2[vo][sc]"], ["[vo]"]
     n = 1
     if have_music:
         inputs += ["-stream_loop", "-1", "-i", music]
-        filters.append(f"[{n}:a]atrim=0:{total:.2f},volume=0.12,afade=t=out:st={max(0, total - 2):.2f}:d=2[m]"); labels.append("[m]"); n += 1
-    if have_hit:
-        inputs += ["-i", hit]; filters.append(f"[{n}:a]volume=0.5[h]"); labels.append("[h]"); n += 1
-    if have_whoosh:
-        # A whoosh on every 2nd scene change keeps the pace up without getting annoying.
-        cuts = [s for j, s in enumerate(starts) if j > 0 and j % 2 == 0][:60]
-        for j, s in enumerate(cuts):
-            inputs += ["-i", whoosh]
-            ms = max(0, int((s - 0.3) * 1000))
-            filters.append(f"[{n}:a]volume=0.35,adelay={ms}|{ms}[w{j}]"); labels.append(f"[w{j}]"); n += 1
-    if have_pop:
-        for j, s in enumerate(gfx_starts[:40]):
-            inputs += ["-i", pop]
-            ms = int(s * 1000)
-            filters.append(f"[{n}:a]volume=0.4,adelay={ms}|{ms}[p{j}]"); labels.append(f"[p{j}]"); n += 1
+        # louder music that automatically ducks under the voice (sidechain), then swells in pauses
+        filters.append(f"[{n}:a]atrim=0:{total:.2f},volume=0.32,afade=t=in:d=0.6,afade=t=out:st={max(0, total - 2):.2f}:d=2[mraw]")
+        filters.append("[mraw][sc]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=350[m]")
+        labels.append("[m]"); n += 1
+    else:
+        filters[0] = "[0:a]anull[vo]"
+
+    def place(key, times, vol, tag):
+        global n
+        for j, s_ in enumerate(times):
+            inputs.extend(["-i", sfx[key]])
+            ms = max(0, int(s_ * 1000))
+            filters.append(f"[{n}:a]volume={vol},adelay={ms}|{ms}[{tag}{j}]"); labels.append(f"[{tag}{j}]"); n += 1
+
+    if "hit" in sfx:
+        place("hit", [0.0] + ([starts[len(starts) // 2]] if len(starts) > 6 else []), 0.55, "h")
+    cuts = [s_ - 0.3 for j, s_ in enumerate(starts) if j > 0 and rng.random() < 0.55][:50]
+    if "cut" in sfx:
+        place("cut", cuts[0::2], rng.uniform(0.3, 0.45), "w")
+    if "cut2" in sfx:
+        place("cut2", cuts[1::2], rng.uniform(0.3, 0.45), "x")
+    if "riser" in sfx and len(starts) > 4:
+        place("riser", [max(0, starts[-1] - 2.0)], 0.35, "r")
+    if "pop" in sfx:
+        place("pop", gfx_starts[:40], 0.4, "p")
     if n > 1:
         filters.append("".join(labels) + f"amix=inputs={len(labels)}:duration=first:normalize=0[out]")
         try:
