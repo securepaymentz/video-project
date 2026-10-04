@@ -1,4 +1,4 @@
-"""stock-engine v15 (installed by Studio)
+"""stock-engine v16 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -210,7 +210,10 @@ def radial(c1, c2):
         for x in range(48):
             d = min(1.0, math.hypot(x - 24, y - 24) / 34)
             sm.putpixel((x, y), tuple(int(c1[k] * (1 - d) + c2[k] * d) for k in range(3)))
-    return sm.resize((W, H), Image.BICUBIC)
+    # Semi-transparent tint: graphics sit on top of (darkened) footage, never a solid background.
+    im = sm.resize((W, H), Image.BICUBIC).convert("RGBA")
+    im.putalpha(95)
+    return im
 
 
 def grid(img, t, alpha=80):
@@ -255,7 +258,7 @@ def paper():
         for x in range(sm.width):
             sm.putpixel((x, y), 222 + rnd.randint(-14, 12))
     base = sm.resize((W, H), Image.BICUBIC).filter(ImageFilter.GaussianBlur(3))
-    return Image.merge("RGBA", (base, base, base.point(lambda v: min(255, v + 2)), Image.new("L", (W, H), 255)))
+    return Image.merge("RGBA", (base, base, base.point(lambda v: min(255, v + 2)), Image.new("L", (W, H), 190)))
 
 
 def object_image(desc, query):
@@ -887,13 +890,27 @@ def render_visual(v, d, seg, i):
             fr = fn(v, k / 30, k / max(1, anim - 1), cache)
             if v.get("type") != "card":
                 fr.alpha_composite(vignette())
-            fr.convert("RGB").save(os.path.join(fdir, f"f{k:03d}.png"))
+            fr.save(os.path.join(fdir, f"f{k:03d}.png"))
     except Exception as e:
         print("Graphic failed, using footage:", e)
         return False
     hold = max(0.0, d - anim / 30)
-    run(["ffmpeg", "-y", "-framerate", "30", "-i", os.path.join(fdir, "f%03d.png"), "-t", f"{d:.2f}",
-         "-vf", f"tpad=stop_mode=clone:stop_duration={hold + 0.1:.2f},scale={W}:{H},zoompan=z='min(zoom+0.0004,1.05)':d=1:s={W}x{H}:fps=30,setsar=1",
+    # Background = the scene's own footage, darkened, so viewers keep watching video under the graphic.
+    bg = os.path.join(work, f"gb{i}.mp4")
+    has_bg = False
+    try:
+        has_bg = (not v.get("_nobg")) and make_footage(i, v.get("query") or plan.get("fallback_query", "city"), d + 0.1, bg, False)
+    except Exception as e:
+        print("Graphic background footage failed:", e)
+    if has_bg:
+        bg_in = ["-i", bg]
+    else:
+        bg_in = ["-f", "lavfi", "-i", f"color=c=0x101014:s={W}x{H}:r=30:d={d + 0.1:.2f}"]
+    fc = (f"[0:v]scale={W}:{H},setsar=1,colorlevels=romax=0.55:gomax=0.55:bomax=0.55,gblur=sigma=2[b];"
+          f"[1:v]format=rgba,tpad=stop_mode=clone:stop_duration={hold + 0.1:.2f}[g];"
+          f"[b][g]overlay=0:0:format=auto,fps=30,format=yuv420p[o]")
+    run(["ffmpeg", "-y", *bg_in, "-framerate", "30", "-i", os.path.join(fdir, "f%03d.png"),
+         "-filter_complex", fc, "-map", "[o]", "-t", f"{d:.2f}",
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
     return True
 
@@ -995,7 +1012,7 @@ for i, sc in enumerate(plan["scenes"]):
     if not done:
         print("No matching US stock for scene", i, "— using a titled graphic")
         headline = " ".join(text.split()[:7]).upper()[:60]
-        if not render_visual({"type": "title", "headline": headline, "color": "dark"}, d, seg, i):
+        if not render_visual({"type": "title", "headline": headline, "color": "dark", "_nobg": True}, d, seg, i):
             raise RuntimeError(f"Could not render scene {i} without unrelated stock")
     pad = os.path.join(work, f"p{i}.wav")
     run(["ffmpeg", "-y", "-i", a, "-af", "apad=pad_dur=0.25", "-t", f"{d:.2f}", "-ar", "44100", "-ac", "2", pad])
