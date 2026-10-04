@@ -1,4 +1,4 @@
-"""stock-engine v31 (installed by Studio)
+"""stock-engine v32 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1274,6 +1274,45 @@ if HG_KEY and rep.get("line") and plan.get("reporter_on", True):
         reporter_seg = None
 
 n_sc = len(plan["scenes"])
+
+# ---- Real TikTok reaction (user-picked library): downloaded with yt-dlp, ~9s, composited over blurred footage ----
+tk = plan.get("tiktok") or {}
+tk_seg = tk_aud = None
+tk_d = 0.0
+tk_after = int(tk.get("after", -1) or -1)
+if tk.get("url") and 0 <= tk_after < n_sc:
+    try:
+        rawt = os.path.join(work, "tiktok_raw.mp4")
+        run(["yt-dlp", "-q", "--no-playlist", "-f", "best[ext=mp4]/best", "-o", rawt, str(tk["url"])])
+        tk_d = max(4.0, min(9.0, duration(rawt) - 0.6))
+        bgt = os.path.join(work, "tiktok_bg.mp4")
+        sc_t = plan["scenes"][tk_after]
+        have_bg = False
+        try:
+            have_bg = make_footage(900, sc_t.get("query", plan.get("fallback_query", "american city")), tk_d, bgt, False)
+        except Exception as e:
+            print("TikTok background skipped:", e)
+        fh = int(H * 0.86) // 2 * 2
+        tk_seg = os.path.join(work, "tiktok.mp4")
+        if have_bg:
+            fc = (f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},boxblur=18:2,eq=brightness=-0.22[bg];"
+                  f"[1:v]trim=0.4:{0.4 + tk_d:.2f},setpts=PTS-STARTPTS,scale=-2:{fh}[fg];"
+                  f"[bg][fg]overlay=(W-w)/2:(H-h)/2,fps=30,setsar=1[v]")
+            run(["ffmpeg", "-y", "-i", bgt, "-i", rawt, "-filter_complex", fc, "-map", "[v]", "-t", f"{tk_d:.2f}",
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", tk_seg])
+        else:
+            fc = (f"[0:v]trim=0.4:{0.4 + tk_d:.2f},setpts=PTS-STARTPTS,split[a][b];"
+                  f"[a]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},boxblur=24:2,eq=brightness=-0.3[bg];"
+                  f"[b]scale=-2:{fh}[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,fps=30,setsar=1[v]")
+            run(["ffmpeg", "-y", "-i", rawt, "-filter_complex", fc, "-map", "[v]", "-t", f"{tk_d:.2f}",
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", tk_seg])
+        tk_aud = os.path.join(work, "tiktok.wav")
+        run(["ffmpeg", "-y", "-ss", "0.4", "-t", f"{tk_d:.2f}", "-i", rawt, "-vn", "-af", "loudnorm=I=-16:TP=-1.5,apad",
+             "-t", f"{tk_d:.2f}", "-ar", "44100", "-ac", "2", tk_aud])
+        print(f"TikTok reaction ready ({tk_d:.1f}s) from @{tk.get('creator')}")
+    except Exception as e:
+        print("TikTok reaction skipped:", e)
+        tk_seg = None
 rep_at = set()
 if reporter_seg:
     # The video OPENS with the HeyGen reporter (frame + captions + SFX on top),
@@ -1354,6 +1393,12 @@ for i, sc in enumerate(plan["scenes"]):
         events.append(f"Dialogue: 0,{ass_time(t)},{ass_time(t + cd)},Cap,,0,0,0,,{c.upper()}")
         t += cd
     t0 += d
+    if tk_seg and i == tk_after:
+        # Real TikTok reaction: vertical clip centered over the dimmed, blurred footage of this scene, original audio.
+        segments.append(tk_seg); audios.append(tk_aud)
+        gfx_starts.append(t0)
+        events.append(f"Dialogue: 0,{ass_time(t0)},{ass_time(t0 + tk_d)},Cap,,0,0,0,,@{str(tk.get('creator', '')).upper()} ON TIKTOK")
+        t0 += tk_d
 
 
 with open(os.path.join(work, "v.txt"), "w") as f:
