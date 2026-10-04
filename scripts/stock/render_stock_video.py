@@ -1,4 +1,4 @@
-"""stock-engine v16 (installed by Studio)
+"""stock-engine v17 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -42,7 +42,8 @@ def speak(text, path):
             r = requests.post(
                 f"https://api.elevenlabs.io/v1/text-to-speech/{EL_VOICE}",
                 headers={"xi-api-key": EL_KEY, "Content-Type": "application/json"},
-                json={"text": text, "model_id": "eleven_multilingual_v2", "voice_settings": {"stability": 0.45, "similarity_boost": 0.8}},
+                # turbo v2.5: ~half the credits of multilingual v2, still studio-quality for narration
+                json={"text": text, "model_id": "eleven_turbo_v2_5", "voice_settings": {"stability": 0.45, "similarity_boost": 0.8}},
                 timeout=120,
             )
             r.raise_for_status()
