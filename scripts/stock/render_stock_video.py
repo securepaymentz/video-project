@@ -1,4 +1,4 @@
-"""stock-engine v21 (installed by Studio)
+"""stock-engine v25 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -109,10 +109,16 @@ MED = {"doctor", "doctors", "physician", "surgeon", "nurse", "nurses", "patient"
 for _w in ("doctor", "doctors", "physician", "physicians", "surgeon", "surgeons", "nurse", "nurses", "patient", "patients", "clinic", "medical", "healthcare"):
     ANCHORS[_w] = MED
 ANCHORS["taxi"] = {"taxi", "cab", "taxicab", "rideshare"}
+# Dental scenes must show a dentist/dental office/teeth, never a generic doctor or money shot.
+DENTAL = {"dentist", "dentists", "dental", "teeth", "tooth", "orthodontist", "braces", "hygienist", "dentistry", "smile"}
+for _w in ("dentist", "dentists", "dental", "teeth", "tooth", "orthodontist", "braces", "hygienist", "dentistry"):
+    ANCHORS[_w] = DENTAL
+MED |= DENTAL
 # Medical/insurance scenes never show street traffic unless the script is about ambulances.
 MED_TRIGGERS = MED | {"insurance", "hospital", "pharmacy"}
-MED_BLOCK = {"taxi", "cab", "taxicab", "traffic", "pedestrian", "pedestrians", "vehicle", "vehicles", "car", "cars", "street", "highway", "road"}
+MED_BLOCK = {"taxi", "cab", "taxicab", "traffic", "pedestrian", "pedestrians", "vehicle", "vehicles", "car", "cars", "street", "highway", "road", "money", "cash", "dollar", "dollars", "banknote", "banknotes"}
 STOP = {"the", "a", "an", "of", "and", "in", "on", "for", "to", "with", "from", "usa", "us", "american", "america", "united", "states", "video", "photo", "footage", "cinematic", "slow", "motion", "drone", "aerial", "orbit", "360", "timelapse", "exterior", "interior", "people", "view", "shot", "close", "up"}
+WORK = {"worker", "workers", "working", "work", "job", "jobs", "employee", "employees", "employment", "unemployment", "hiring", "interview", "office", "construction", "factory", "warehouse", "cashier", "retail", "staff", "team", "meeting", "laborer", "builder", "nurse", "doctor", "teacher", "chef", "waiter", "driver", "mechanic", "engineer", "business", "businessman", "businesswoman", "manager", "family", "shopper", "shopping", "customer", "store", "supermarket", "grocery", "kitchen", "home", "student", "students", "farmer", "farm", "trucker", "delivery", "patient", "clinic", "hospital"} | DENTAL
 
 
 def has_word(w, text):
@@ -151,9 +157,12 @@ def candidate_ok(query, metadata, location=""):
     both = text + " " + place
     if any(has_word(w, both) for w in FOREIGN_WORDS):
         return False
-    # Search rank is not proof of filming location; require an explicit US clue.
+    # Every result came from a US-only search ("... USA"). Places still need an explicit US clue;
+    # people/work scenes (rarely tagged "USA") pass when the result matches the work subject
+    # and carries no foreign tag, so videos show real American workers instead of only dollar bills.
     if not any(has_word(w, both) for w in US_WORDS):
-        return False
+        if named_places(query) or not (subject(query) & WORK) or not (extract_words(both) & WORK):
+            return False
     if place and not any(has_word(w, place) for w in US_WORDS):
         return False
     # Named state/city: the clip must show that place (or a close neighbour), never another US city.
@@ -1015,7 +1024,8 @@ def render_visual(v, d, seg, i):
     # Never a black screen: try the scene's subject, then the video's theme, then generic US money/city footage.
     tries = [] if v.get("_nobg") else [v.get("query")]
     # Theme fallbacks stay on-topic (no generic street shots that end up showing taxis).
-    tries += [plan.get("fallback_query"), "money cash dollars"]
+    # Never generic money shots: fall back to real American people at work.
+    tries += [plan.get("fallback_query"), random.choice(["american workers office USA", "american construction workers", "american warehouse workers", "american store employees", "american family kitchen"])]
     for q_ in [x for x in tries if x]:
         try:
             if make_footage(i, q_, d + 0.1, bg, False) or make_footage(i, q_, d + 0.1, bg, True):
@@ -1101,6 +1111,7 @@ def make_footage(i, q, d, seg, want_photo):
 
 t0 = 0.0
 starts = []
+gfx_starts = []
 for i, sc in enumerate(plan["scenes"]):
     starts.append(t0)
     text = sc["text"].strip()
@@ -1111,6 +1122,7 @@ for i, sc in enumerate(plan["scenes"]):
     vis = sc.get("visual") if i >= 3 else None  # the video ALWAYS opens on real footage
     done = False
     if vis:
+        gfx_starts.append(t0)
         # Presentation graphics are short inserts (max ~2.8s); the rest of the scene is footage.
         vis = dict(vis, query=q)
         gd = min(d, 2.8)
@@ -1127,6 +1139,14 @@ for i, sc in enumerate(plan["scenes"]):
                 run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-t", f"{d:.2f}",
                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
                 done = True
+    if not done and i == 0:
+        # Human hook: open on a real American talking to camera / reporter (free stock), so it feels real.
+        for hq in ("man talking to camera", "woman talking to camera", "news reporter talking", "person vlog talking"):
+            try:
+                if make_footage(0, hq, d, seg, False):
+                    done = True; break
+            except Exception as e:
+                print("Hook clip skipped:", e)
     if not done:
         done = make_footage(i, q, d, seg, UNSPLASH and i >= 3 and i % 3 == 2)
     if not done:
@@ -1179,6 +1199,8 @@ if EL_KEY and plan.get("sfx", True):
     have_whoosh = el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": "short fast cinematic whoosh transition swoosh", "duration_seconds": 0.8, "prompt_influence": 0.6}, whoosh)
     hit = os.path.join(work, "hit.mp3")
     have_hit = el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": "deep cinematic boom impact hit with riser tail", "duration_seconds": 1.5, "prompt_influence": 0.6}, hit)
+    pop = os.path.join(work, "pop.mp3")
+    have_pop = bool(gfx_starts) and el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": "short clean UI pop ding notification for on-screen graphic", "duration_seconds": 0.6, "prompt_influence": 0.6}, pop)
     inputs, filters, labels = ["-i", os.path.join(work, "voice.wav")], [], ["[0:a]"]
     n = 1
     if have_music:
@@ -1193,6 +1215,11 @@ if EL_KEY and plan.get("sfx", True):
             inputs += ["-i", whoosh]
             ms = max(0, int((s - 0.3) * 1000))
             filters.append(f"[{n}:a]volume=0.35,adelay={ms}|{ms}[w{j}]"); labels.append(f"[w{j}]"); n += 1
+    if have_pop:
+        for j, s in enumerate(gfx_starts[:40]):
+            inputs += ["-i", pop]
+            ms = int(s * 1000)
+            filters.append(f"[{n}:a]volume=0.4,adelay={ms}|{ms}[p{j}]"); labels.append(f"[p{j}]"); n += 1
     if n > 1:
         filters.append("".join(labels) + f"amix=inputs={len(labels)}:duration=first:normalize=0[out]")
         try:
@@ -1200,6 +1227,14 @@ if EL_KEY and plan.get("sfx", True):
             os.replace(os.path.join(work, "mixed.wav"), os.path.join(work, "voice.wav"))
         except Exception as e:
             print("Audio mix skipped:", e)
+    # Loud, clear YouTube audio: clean rumble, add voice presence, even out levels, then hit -14 LUFS with a safe peak ceiling.
+    try:
+        run(["ffmpeg", "-y", "-i", os.path.join(work, "voice.wav"), "-af",
+             "highpass=f=80,equalizer=f=3000:t=q:w=1.2:g=3,acompressor=threshold=-20dB:ratio=3:attack=5:release=120:makeup=2,loudnorm=I=-14:TP=-1:LRA=9",
+             "-ar", "48000", "-ac", "2", os.path.join(work, "loud.wav")])
+        os.replace(os.path.join(work, "loud.wav"), os.path.join(work, "voice.wav"))
+    except Exception as e:
+        print("Loudness boost skipped:", e)
 
 margin = int(H * (0.28 if vertical else 0.1))
 ass = f"""[Script Info]
