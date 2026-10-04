@@ -1,8 +1,8 @@
-"""stock-engine v27 (installed by Studio)
+"""stock-engine v31 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
-import base64, json, os, random, re, subprocess, sys, tempfile
+import base64, json, os, random, re, subprocess, sys, tempfile, time
 import requests
 
 out = sys.argv[1]
@@ -20,7 +20,40 @@ if not PEXELS and not UNSPLASH and not PIXABAY:
 
 EDGE = {"es": "es-MX-JorgeNeural", "en": "en-US-GuyNeural", "pt": "pt-BR-AntonioNeural", "fr": "fr-FR-HenriNeural"}
 EL_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
-USE_EL = EL_KEY and os.environ.get("PREMIUM_VOICE", "true") != "false"
+HF_ID = os.environ.get("HIGGSFIELD_KEY_ID", "").strip()
+HF_SECRET = os.environ.get("HIGGSFIELD_KEY_SECRET", "").strip()
+HF = bool(HF_ID and HF_SECRET)
+HF_TTS = os.environ.get("HIGGSFIELD_TTS_MODEL", "").strip().strip("/") or "minimax/speech-2.8-hd"
+HF_MUSIC = os.environ.get("HIGGSFIELD_MUSIC_MODEL", "").strip().strip("/") or "elevenlabs/music"
+HF_VOICE = os.environ.get("HIGGSFIELD_VOICE_ID", "").strip()
+PREMIUM = os.environ.get("PREMIUM_VOICE", "true") != "false"
+VOICE_PROVIDER = plan.get("voice_provider", "elevenlabs")
+AUDIO_PROVIDER = plan.get("audio_provider", "elevenlabs")
+USE_HF_VOICE = PREMIUM and VOICE_PROVIDER == "higgsfield" and HF
+USE_EL = EL_KEY and PREMIUM and not USE_HF_VOICE
+USE_HF_AUDIO = AUDIO_PROVIDER == "higgsfield" and HF
+
+
+def hf_generate(model, body, path):
+    """Higgsfield async API: submit, poll status, download the audio output."""
+    h = {"Authorization": f"Key {HF_ID}:{HF_SECRET}", "Content-Type": "application/json"}
+    r = requests.post(f"https://platform.higgsfield.ai/{model}", headers=h, json=body, timeout=60)
+    r.raise_for_status()
+    j = r.json()
+    url = j.get("status_url") or f"https://platform.higgsfield.ai/requests/{j['request_id']}/status"
+    for _ in range(120):
+        time.sleep(3)
+        s = requests.get(url, headers=h, timeout=30).json()
+        st = s.get("status")
+        if st == "completed":
+            out = s.get("audio") or (s.get("audios") or [None])[0] or s.get("video") or {}
+            data = requests.get(out["url"], timeout=120).content
+            open(path + ".src", "wb").write(data)
+            run(["ffmpeg", "-y", "-i", path + ".src", path])
+            return True
+        if st in ("failed", "nsfw", "canceled"):
+            raise RuntimeError(f"Higgsfield {st}: {s.get('error')}")
+    raise RuntimeError("Higgsfield timed out")
 EL_VOICE = str(plan.get("voice_id") or "").strip() or os.environ.get("ELEVENLABS_VOICE_ID", "").strip() or "pNInz6obpgDQGcFmaJgB"
 EDGE_FEMALE = {"es": "es-MX-DaliaNeural", "en": "en-US-JennyNeural", "pt": "pt-BR-FranciscaNeural", "fr": "fr-FR-DeniseNeural"}
 if plan.get("voice_gender") == "female":
@@ -36,7 +69,18 @@ def duration(path):
 
 
 def speak(text, path):
-    global USE_EL
+    global USE_EL, USE_HF_VOICE
+    if USE_HF_VOICE:
+        try:
+            body = {"text": text, "prompt": text}
+            if HF_VOICE:
+                body["voice_id"] = HF_VOICE
+            hf_generate(HF_TTS, body, path)
+            return
+        except Exception as e:
+            print("Higgsfield voice failed, trying next voice:", e)
+            USE_HF_VOICE = False
+            USE_EL = bool(EL_KEY and PREMIUM)
     if USE_EL:
         try:
             r = requests.post(
@@ -1174,6 +1218,8 @@ def make_footage(i, q, d, seg, want_photo):
 HG_KEY = os.environ.get("HEYGEN_API_KEY", "").strip()
 HG_AVATAR = os.environ.get("HEYGEN_AVATAR_ID", "").strip()
 HG_TYPE = os.environ.get("HEYGEN_AVATAR_TYPE", "").strip().lower()
+if HG_AVATAR and not HG_TYPE:
+    HG_TYPE = "avatar"  # a saved Avatar ID is a standard/Avatar III presenter, not a talking photo
 reporter_seg = reporter_aud = None
 reporter_d = 0.0
 rep = plan.get("reporter") or {}
@@ -1230,8 +1276,10 @@ if HG_KEY and rep.get("line") and plan.get("reporter_on", True):
 n_sc = len(plan["scenes"])
 rep_at = set()
 if reporter_seg:
-    rep_at = {1, n_sc - 1} if n_sc < 12 else {1, n_sc // 2, n_sc - 1}
-    rep_at = {k for k in rep_at if 0 < k < n_sc}
+    # The video OPENS with the HeyGen reporter (frame + captions + SFX on top),
+    # then the same clip repeats mid-video and before the ending.
+    rep_at = {0, n_sc - 1} if n_sc < 12 else {0, n_sc // 2, n_sc - 1}
+    rep_at = {k for k in rep_at if 0 <= k < n_sc}
 
 t0 = 0.0
 starts = []
@@ -1274,16 +1322,19 @@ for i, sc in enumerate(plan["scenes"]):
                 run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-t", f"{d:.2f}",
                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
                 done = True
-    if not done and i == 0:
-        # Human hook: open on a real American talking to camera / reporter (free stock), so it feels real.
-        for hq in ("man talking to camera", "woman talking to camera", "news reporter talking", "person vlog talking"):
-            try:
-                if make_footage(0, hq, d, seg, False):
-                    done = True; break
-            except Exception as e:
-                print("Hook clip skipped:", e)
     if not done:
         done = make_footage(i, q, d, seg, UNSPLASH and i >= 3 and i % 3 == 2)
+    if not done:
+        # Named place with no exact match: show that same place (skyline, streets, homes), never another subject.
+        for pl in sorted(named_places(q + " " + text)):
+            for v in ("skyline", "city", "downtown", "homes", "night"):
+                try:
+                    if make_footage(i, f"{pl} {v}", d, seg, False):
+                        done = True; break
+                except Exception as e:
+                    print("Place fallback skipped:", e)
+            if done:
+                break
     if not done:
         print("No matching US stock for scene", i, "— using a titled graphic")
         headline = " ".join(text.split()[:7]).upper()[:60]
@@ -1315,6 +1366,14 @@ run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", os.path.join(work, "a.t
 
 # Background music + transition sound effects (ElevenLabs). Any failure keeps the plain voice track.
 def el_audio(url, body, path):
+    if USE_HF_AUDIO:
+        try:
+            prompt = body.get("prompt") or body.get("text") or ""
+            secs = body.get("duration_seconds") or round(body.get("music_length_ms", 30000) / 1000)
+            return hf_generate(HF_MUSIC, {"prompt": prompt, "duration": secs, "duration_seconds": secs}, path)
+        except Exception as e:
+            print("Higgsfield audio skipped:", e)
+            return False
     try:
         r = requests.post(url, headers={"xi-api-key": EL_KEY, "Content-Type": "application/json"}, json=body, timeout=180)
         r.raise_for_status()
@@ -1324,7 +1383,7 @@ def el_audio(url, body, path):
         print("ElevenLabs audio skipped:", e)
         return False
 
-if EL_KEY and plan.get("sfx", True):
+if (USE_HF_AUDIO or EL_KEY) and plan.get("sfx", True):
     total = duration(os.path.join(work, "voice.wav"))
     rng = random.Random()
     # Every video gets its own sound identity: a music style + a matching SFX pack, picked at random.
