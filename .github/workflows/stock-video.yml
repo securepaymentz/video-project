@@ -1,4 +1,4 @@
-# stock-engine v25 (installed by Studio)
+# stock-engine v27 (installed by Studio)
 name: Stock Clips Video
 
 on:
@@ -37,6 +37,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
           pip install requests edge-tts twikit google-auth google-auth-oauthlib google-api-python-client pillow
+          pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install transformers || true
 
       - name: Remember clips used in earlier videos
         uses: actions/cache@v4
@@ -44,6 +45,12 @@ jobs:
           path: /tmp/used-media
           key: used-media-${{ github.run_id }}
           restore-keys: used-media-
+
+      - name: Cache the image-matching AI model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: clip-vit-b32
 
       - name: Build the video
         env:
@@ -54,6 +61,9 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
+          HEYGEN_API_KEY: ${{ secrets.HEYGEN_API_KEY }}
+          HEYGEN_AVATAR_ID: ${{ secrets.HEYGEN_AVATAR_ID }}
+          HEYGEN_AVATAR_TYPE: ${{ secrets.HEYGEN_AVATAR_TYPE }}
           PREMIUM_VOICE: ${{ github.event.inputs.premium_voice }}
         run: python scripts/stock/render_stock_video.py /tmp/brand-video/daily-video.mp4
 
