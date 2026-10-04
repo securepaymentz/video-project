@@ -1,4 +1,4 @@
-"""stock-engine v17 (installed by Studio)
+"""stock-engine v19 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -56,6 +56,33 @@ def speak(text, path):
 
 
 used = set()
+# Cross-video memory: clips/photos shown in earlier videos are avoided when
+# any fresh match exists, so each video looks new.
+import atexit
+HIST_PATH = "/tmp/used-media/used.json"
+try:
+    _hist_list = json.load(open(HIST_PATH))
+except Exception:
+    _hist_list = []
+history = set(_hist_list)
+
+
+def hkey(k):
+    return k if isinstance(k, str) else f"{k[0]}:{k[1]}" if isinstance(k, tuple) else f"px:{k}"
+
+
+def seen(k):
+    return hkey(k) in history
+
+
+@atexit.register
+def _save_history():
+    try:
+        os.makedirs(os.path.dirname(HIST_PATH), exist_ok=True)
+        new = [hkey(k) for k in used if hkey(k) not in history]
+        json.dump((_hist_list + new)[-4000:], open(HIST_PATH, "w"))
+    except Exception as e:
+        print("history save failed", e)
 
 # Stock libraries have incomplete geographic metadata. Never infer anyone's
 # nationality from appearance; use search context and explicit location clues.
@@ -107,10 +134,12 @@ def find_photo(query):
                          params={"query": q, "orientation": orient, "per_page": 15, "content_filter": "high"}, timeout=30)
         if r.status_code != 200:
             print("Unsplash error", r.status_code, r.text[:200]); continue
-        for ph in r.json().get("results", []):
+        res = r.json().get("results", [])
+        res.sort(key=lambda ph: (seen(("us", ph["id"])), random.random()))
+        for ph in res:
             metadata = " ".join(str(ph.get(k) or "") for k in ("description", "alt_description", "slug")) + " " + " ".join(str(t.get("title") or "") for t in ph.get("tags", []))
-            if ph["id"] in used or not candidate_ok(query, metadata, ph.get("location", {}).get("name") if isinstance(ph.get("location"), dict) else ""): continue
-            used.add(ph["id"])
+            if ("us", ph["id"]) in used or not candidate_ok(query, metadata, ph.get("location", {}).get("name") if isinstance(ph.get("location"), dict) else ""): continue
+            used.add(("us", ph["id"]))
             try:  # Unsplash guidelines: report the download
                 requests.get(ph["links"]["download_location"], headers={"Authorization": f"Client-ID {UNSPLASH}"}, timeout=15)
             except Exception:
@@ -125,7 +154,7 @@ def find_pixabay(query, need):
     for q in search_terms(query):
         try:
             r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY, "q": q[:100], "per_page": 30,
-                             "safesearch": "true", "order": "popular"}, timeout=30)
+                             "safesearch": "true", "order": random.choice(["popular", "latest"])}, timeout=30)
         except Exception as e:
             print("Pixabay error", e); continue
         if r.status_code != 200:
@@ -138,10 +167,10 @@ def find_pixabay(query, need):
             if not opts: continue
             f = opts[0]
             is_v = f["height"] > f["width"]
-            hits.append((is_v != vertical, v.get("duration", 0) < need, random.random(), v, f))
-        hits.sort(key=lambda h: h[:3])
+            hits.append((is_v != vertical, seen(("pb", v["id"])), v.get("duration", 0) < need, random.random(), v, f))
+        hits.sort(key=lambda h: h[:4])
         if hits:
-            _, _, _, v, f = hits[0]
+            v, f = hits[0][4], hits[0][5]
             used.add(("pb", v["id"]))
             return f["url"], (v.get("user") or "Pixabay") + " (Pixabay)"
     return None, None
@@ -157,14 +186,14 @@ def find_clip(query, need):
                          params={"query": q, "orientation": orient, "per_page": 15, "size": "medium"}, timeout=30)
         if r.status_code != 200:
             print("Pexels error", r.status_code, r.text[:200]); continue
-        vids = [v for v in r.json().get("videos", []) if v["id"] not in used and candidate_ok(query, v.get("url", "").split("/video/")[-1])]
-        vids.sort(key=lambda v: (v.get("duration", 0) < need, random.random()))
+        vids = [v for v in r.json().get("videos", []) if ("px", v["id"]) not in used and candidate_ok(query, v.get("url", "").split("/video/")[-1])]
+        vids.sort(key=lambda v: (seen(("px", v["id"])), v.get("duration", 0) < need, random.random()))
         for v in vids:
             files = [f for f in v["video_files"] if f.get("file_type") == "video/mp4" and f.get("height")]
             if not files: continue
             target = H if vertical else W
             files.sort(key=lambda f: abs((f["height"] if vertical else f["width"]) - target))
-            used.add(v["id"])
+            used.add(("px", v["id"]))
             return files[0]["link"], v.get("user", {}).get("name", "Pexels") + " (Pexels)"
     return None, None
 
@@ -899,10 +928,15 @@ def render_visual(v, d, seg, i):
     # Background = the scene's own footage, darkened, so viewers keep watching video under the graphic.
     bg = os.path.join(work, f"gb{i}.mp4")
     has_bg = False
-    try:
-        has_bg = (not v.get("_nobg")) and make_footage(i, v.get("query") or plan.get("fallback_query", "city"), d + 0.1, bg, False)
-    except Exception as e:
-        print("Graphic background footage failed:", e)
+    # Never a black screen: try the scene's subject, then the video's theme, then generic US money/city footage.
+    tries = [] if v.get("_nobg") else [v.get("query")]
+    tries += [plan.get("fallback_query"), "american people shopping", "united states city street", "money cash dollars"]
+    for q_ in [x for x in tries if x]:
+        try:
+            if make_footage(i, q_, d + 0.1, bg, False) or make_footage(i, q_, d + 0.1, bg, True):
+                has_bg = True; break
+        except Exception as e:
+            print("Graphic background footage failed:", e)
     if has_bg:
         bg_in = ["-i", bg]
     else:
