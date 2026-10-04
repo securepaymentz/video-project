@@ -1,4 +1,4 @@
-"""stock-engine v12 (installed by Studio)
+"""stock-engine v15 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -291,12 +291,49 @@ def object_image(desc, query):
 
 
 def frame_title(v, t, p, cache):
+    var = v.get("_i", 0) % 3
+    head = v["headline"].upper()
     if "bg" not in cache:
         cache["bg"] = radial(*BG.get(v.get("color") or "red", BG["red"]))
-        cache["lab"] = label(v["headline"].upper(), 92 * U, W * 0.86)
+        cache["lab"] = label(head, 92 * U, W * 0.86)
+        ws = head.split()
+        cut = max(1, len(ws) // 2) if len(ws) > 3 else len(ws)
+        cache["lines"] = [x for x in (" ".join(ws[:cut]), " ".join(ws[cut:])) if x]
+        cache["big"] = fit(FB, max(cache["lines"], key=len), W * 0.74, 150 * U)
+        cache["kick"] = fit(FSERIF, v.get("sub") or "", W * 0.6, 46 * U) if v.get("sub") else None
+        cache["band"] = fit(FB, head, W * 0.84, 110 * U)
     img = cache["bg"].convert("RGBA")
-    grid(img, t)
-    paste_scaled(img, cache["lab"], W / 2, H / 2, 0.82 + 0.18 * ease(p * 1.4), ease(p * 2))
+    if var == 0:
+        grid(img, t)
+        paste_scaled(img, cache["lab"], W / 2, H / 2, 0.82 + 0.18 * ease(p * 1.4), ease(p * 2))
+        return img
+    if var == 1:
+        # Editorial: left-aligned stacked headline with an orange rule
+        grid(img, t, 35)
+        d = ImageDraw.Draw(img)
+        x0, f = W * 0.12, cache["big"]
+        lines = cache["lines"]
+        ytop = H / 2 - len(lines) * f.size * 0.6
+        bh = len(lines) * f.size * 1.2 * ease(p * 1.6)
+        d.rectangle([x0 - 40 * U, ytop, x0 - 26 * U, ytop + bh], fill=ACC)
+        for k, ln in enumerate(lines):
+            g = ease(p * 1.8 - 0.2 - k * 0.2)
+            d.text((x0 - (1 - g) * 60 * U, ytop + k * f.size * 1.2), ln, font=f, fill=(255, 255, 255, int(255 * g)))
+        if cache["kick"] is not None:
+            g = ease(p * 2 - 1.0)
+            d.text((x0, ytop + len(lines) * f.size * 1.2 + 20 * U), v["sub"], font=cache["kick"], fill=(235, 200, 180, int(255 * g)))
+        return img
+    # Band wipe: an orange band sweeps across with the headline
+    grid(img, t, 25)
+    d = ImageDraw.Draw(img)
+    f = cache["band"]
+    bh = f.size * 1.9
+    g = ease(p * 1.7)
+    d.rectangle([0, H / 2 - bh / 2, W * g, H / 2 + bh / 2], fill=ACC)
+    d.rectangle([0, H / 2 + bh / 2, W * ease(p * 1.7 - 0.15), H / 2 + bh / 2 + 10 * U], fill=(20, 20, 20))
+    ta = ease(p * 2 - 0.5)
+    tw = f.getlength(head)
+    d.text((W / 2 - tw / 2 + (1 - ta) * 80 * U, H / 2 - f.size * 0.62), head, font=f, fill=(255, 255, 255, int(255 * ta)))
     return img
 
 
@@ -394,17 +431,463 @@ def frame_card(v, t, p, cache):
     return img
 
 
+ACC = (232, 93, 42, 255)
+_VIG = {}
+
+
+def vignette():
+    if "v" not in _VIG:
+        sm = Image.new("L", (64, 36))
+        for y in range(36):
+            for x in range(64):
+                dd = math.hypot((x - 32) / 32, (y - 18) / 18)
+                sm.putpixel((x, y), int(min(1.0, max(0.0, dd - 0.55) / 0.8) * 170))
+        ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ov.putalpha(sm.resize((W, H), Image.BICUBIC))
+        _VIG["v"] = ov
+    return _VIG["v"]
+
+
+def parse_num(s):
+    import re as _re
+    m = _re.search(r"\d[\d,]*(?:\.\d+)?", s or "")
+    if not m:
+        return None
+    raw = m.group(0)
+    dec = len(raw.split(".")[1]) if "." in raw else 0
+    return s[:m.start()], float(raw.replace(",", "")), dec, s[m.end():]
+
+
+def frame_stat(v, t, p, cache):
+    if "bg" not in cache:
+        cache["bg"] = radial(*BG.get(v.get("color") or "dark", BG["dark"]))
+        cache["num"] = parse_num(v.get("value") or "")
+        cache["f"] = fit(FB, (v.get("value") or "") + "0", W * 0.8, 260 * U)
+        cache["lab"] = label(v["headline"].upper(), 54 * U, W * 0.7, bg=ACC)
+        cache["sub"] = fit(FSERIF, v.get("sub") or "", W * 0.6, 48 * U) if v.get("sub") else None
+    img = cache["bg"].convert("RGBA")
+    grid(img, t, 30)
+    d = ImageDraw.Draw(img)
+    pn, g, a = cache["num"], ease(p * 1.3), ease(p * 2)
+    txt = f"{pn[0]}{pn[1] * g:,.{pn[2]}f}{pn[3]}" if pn else (v.get("value") or "")
+    f = cache["f"]
+    tw = f.getlength(txt)
+    y = H * 0.42
+    d.text((W / 2 - tw / 2, y - f.size / 2 + (1 - a) * 40 * U), txt, font=f, fill=(255, 255, 255, int(255 * a)))
+    lw = W * 0.3 * ease(p * 1.5 - 0.3)
+    if lw > 0:
+        uy = y + f.size * 0.62
+        d.rectangle([W / 2 - lw / 2, uy, W / 2 + lw / 2, uy + 10 * U], fill=(60, 200, 90) if v.get("trend") != "down" else (220, 50, 50))
+    paste_scaled(img, cache["lab"], W / 2, H * 0.73, 0.9 + 0.1 * ease(p * 2 - 0.6), ease(p * 2 - 0.6))
+    if cache["sub"] is not None:
+        sa = ease(p * 2 - 0.9)
+        sw = cache["sub"].getlength(v["sub"])
+        d.text((W / 2 - sw / 2, H * 0.82), v["sub"], font=cache["sub"], fill=(220, 220, 225, int(255 * sa)))
+    return img
+
+
+def frame_list(v, t, p, cache):
+    items = (v.get("items") or [])[:4]
+    head = v["headline"].upper()
+    if "bg" not in cache:
+        cache["bg"] = radial(*BG.get(v.get("color") or "dark", BG["dark"]))
+        cache["hf"] = fit(FB, head, W * 0.8, 84 * U)
+        cache["rows"] = [label(it, 52 * U, W * 0.62, fg=(20, 20, 20), bg=(245, 244, 238, 245)) for it in items]
+        cache["nf"] = ImageFont.truetype(FB, int(46 * U))
+    img = cache["bg"].convert("RGBA")
+    grid(img, t, 28)
+    d = ImageDraw.Draw(img)
+    hf, a, x0 = cache["hf"], ease(p * 2), W * 0.12
+    hy = H * 0.14
+    d.text((x0, hy - (1 - a) * 30 * U), head, font=hf, fill=(255, 255, 255, int(255 * a)))
+    d.rectangle([x0, hy + hf.size * 1.25, x0 + W * 0.12 * a, hy + hf.size * 1.25 + 10 * U], fill=ACC)
+    rows = cache["rows"]
+    top, gap = H * 0.36, H * 0.56 / max(1, len(rows))
+    for k, row in enumerate(rows):
+        g = ease(p * 1.8 - 0.25 - k * 0.18)
+        if g <= 0:
+            continue
+        cy = top + gap * k + gap / 2
+        r = 38 * U
+        cx = x0 + r - (1 - g) * W * 0.15
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=ACC)
+        num = str(k + 1)
+        nw = cache["nf"].getlength(num)
+        d.text((cx - nw / 2, cy - cache["nf"].size * 0.6), num, font=cache["nf"], fill=(255, 255, 255))
+        paste_scaled(img, row, cx + r + 30 * U + row.width / 2, cy, 1, g)
+        d = ImageDraw.Draw(img)
+    return img
+
+
+def frame_compare(v, t, p, cache):
+    head = v["headline"].upper()
+    if "bg" not in cache:
+        cache["bg"] = radial(*BG.get(v.get("color") or "dark", BG["dark"]))
+        cache["hf"] = fit(FB, head, W * 0.8, 80 * U)
+        cache["L"] = label((v.get("left") or "BEFORE").upper(), 50 * U, W * 0.34, bg=(80, 80, 92, 240))
+        cache["R"] = label((v.get("right") or "NOW").upper(), 50 * U, W * 0.34, bg=ACC)
+        cache["vf"] = fit(FB, max(v.get("left_value") or "", v.get("right_value") or "", key=len), W * 0.34, 170 * U)
+        cache["vs"] = ImageFont.truetype(FB, int(54 * U))
+    img = cache["bg"].convert("RGBA")
+    grid(img, t, 25)
+    d = ImageDraw.Draw(img)
+    a = ease(p * 2)
+    hf = cache["hf"]
+    hw = hf.getlength(head)
+    d.text((W / 2 - hw / 2, H * 0.1 - (1 - a) * 30 * U), head, font=hf, fill=(255, 255, 255, int(255 * a)))
+    y0, y1 = H * 0.3, H * 0.86
+    for side, key, val, fill, delay in ((-1, "L", v.get("left_value") or "", (34, 34, 42), 0.1), (1, "R", v.get("right_value") or "", (70, 28, 14), 0.35)):
+        g = ease(p * 1.8 - delay)
+        if g <= 0:
+            continue
+        cx = W / 2 + side * W * 0.23 + side * (1 - g) * W * 0.4
+        d.rounded_rectangle([cx - W * 0.2, y0, cx + W * 0.2, y1], radius=int(24 * U), fill=fill, outline=(255, 255, 255) if side > 0 else (120, 120, 130), width=max(2, int(3 * U)))
+        paste_scaled(img, cache[key], cx, y0 + 70 * U, 1, g)
+        d = ImageDraw.Draw(img)
+        vw = cache["vf"].getlength(val)
+        d.text((cx - vw / 2, (y0 + y1) / 2 - cache["vf"].size * 0.35), val, font=cache["vf"], fill=(255, 255, 255, int(255 * g)))
+    gv = ease(p * 2 - 1.0)
+    if gv > 0:
+        r = 56 * U * gv
+        d.ellipse([W / 2 - r, (y0 + y1) / 2 - r, W / 2 + r, (y0 + y1) / 2 + r], fill=(255, 255, 255))
+        if gv > 0.6:
+            sw = cache["vs"].getlength("VS")
+            d.text((W / 2 - sw / 2, (y0 + y1) / 2 - cache["vs"].size * 0.6), "VS", font=cache["vs"], fill=(20, 20, 20))
+    return img
+
+
+def Fnt(path, size):
+    return ImageFont.truetype(path, max(12, int(size)))
+
+
+def wrap(text, f, maxw, maxl=4):
+    lines, cur = [], ""
+    for w_ in (text or "").split():
+        t2 = (cur + " " + w_).strip()
+        if not cur or f.getlength(t2) <= maxw:
+            cur = t2
+        else:
+            lines.append(cur); cur = w_
+    if cur:
+        lines.append(cur)
+    return lines[:maxl]
+
+
+def ctext(d, text, f, cx, y, fill):
+    d.text((cx - f.getlength(text) / 2, y), text, font=f, fill=fill)
+
+
+def kv(s):
+    if ":" in s:
+        a_, b_ = s.split(":", 1)
+        return a_.strip(), b_.strip()
+    return s.strip(), ""
+
+
+def base(v, cache, t, col="dark", alpha=28):
+    if "base" not in cache:
+        cache["base"] = radial(*BG.get(v.get("color") or col, BG[col]))
+    img = cache["base"].convert("RGBA")
+    grid(img, t, alpha)
+    return img, ImageDraw.Draw(img)
+
+
+def headline_tl(d, v, p, size=72):
+    f = fit(FB, v["headline"].upper(), W * 0.8, size * U)
+    a = ease(p * 2)
+    d.text((W * 0.08, H * 0.09 - (1 - a) * 30 * U), v["headline"].upper(), font=f, fill=(255, 255, 255, int(255 * a)))
+    d.rectangle([W * 0.08, H * 0.09 + f.size * 1.2, W * 0.08 + W * 0.1 * a, H * 0.09 + f.size * 1.2 + 9 * U], fill=ACC)
+
+
+def frame_line(v, t, p, cache):
+    img, d = base(v, cache, t, "blue", 35)
+    headline_tl(d, v, p)
+    up = v.get("trend") != "down"
+    x0, x1, y0, y1 = W * 0.1, W * 0.88, H * 0.32, H * 0.86
+    d.line([(x0, y1), (x1, y1)], fill=(255, 255, 255, 120), width=max(2, int(3 * U)))
+    pts = []
+    for k in range(61):
+        s = k / 60
+        f_ = s ** 1.5 if up else (1 - s) ** 1.5
+        pts.append((x0 + (x1 - x0) * s, y1 - (y1 - y0) * (0.12 + 0.75 * f_ + 0.04 * math.sin(s * 19))))
+    vis = pts[: max(2, int(61 * ease(p * 1.4)))]
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(ov).polygon(vis + [(vis[-1][0], y1), (x0, y1)], fill=(232, 93, 42, 70))
+    img.alpha_composite(ov)
+    d = ImageDraw.Draw(img)
+    d.line(vis, fill=ACC, width=max(4, int(8 * U)), joint="curve")
+    ex, ey = vis[-1]
+    r = 14 * U
+    d.ellipse([ex - r, ey - r, ex + r, ey + r], fill=(255, 255, 255))
+    if v.get("value") and p > 0.6:
+        if "lab" not in cache:
+            cache["lab"] = label(v["value"], 80 * U, W * 0.4, bg=ACC)
+        lab = cache["lab"]
+        paste_scaled(img, lab, min(W - lab.width / 2 - 20 * U, ex), max(lab.height, ey - lab.height), 1, ease((p - 0.6) * 3))
+    return img
+
+
+def frame_stat_split(v, t, p, cache):
+    img, d = base(v, cache, t, "dark", 25)
+    if "f" not in cache:
+        cache["num"] = parse_num(v.get("value") or "")
+        cache["f"] = fit(FB, (v.get("value") or "") + "0", W * 0.42, 230 * U)
+        cache["hf"] = Fnt(FB, 84 * U)
+        cache["sf"] = Fnt(FSERIF, 46 * U)
+    d.rectangle([0, 0, W * 0.48 * ease(p * 1.5), H], fill=ACC)
+    lines = wrap(v["headline"].upper(), cache["hf"], W * 0.38)
+    hf, la = cache["hf"], ease(p * 2 - 0.4)
+    y = H / 2 - len(lines) * hf.size * 0.6
+    for k, ln in enumerate(lines):
+        d.text((W * 0.06, y + k * hf.size * 1.2), ln, font=hf, fill=(255, 255, 255, int(255 * la)))
+    pn, g, a = cache["num"], ease(p * 1.3 - 0.2), ease(p * 2 - 0.3)
+    txt = f"{pn[0]}{pn[1] * g:,.{pn[2]}f}{pn[3]}" if pn else (v.get("value") or "")
+    ctext(d, txt, cache["f"], W * 0.74, H / 2 - cache["f"].size * 0.6, (255, 255, 255, int(255 * a)))
+    if v.get("sub"):
+        ctext(d, v["sub"], cache["sf"], W * 0.74, H / 2 + cache["f"].size * 0.6, (230, 200, 185, int(255 * ease(p * 2 - 1))))
+    return img
+
+
+def frame_grid(v, t, p, cache):
+    img, d = base(v, cache, t, "dark", 25)
+    items = (v.get("items") or [])[:4]
+    hf = fit(FB, v["headline"].upper(), W * 0.84, 80 * U)
+    ctext(d, v["headline"].upper(), hf, W / 2, H * 0.1, (255, 255, 255, int(255 * ease(p * 2))))
+    n = max(1, len(items))
+    gap = W * 0.025
+    cw = (W * 0.84 - gap * (n - 1)) / n
+    tf, nf = Fnt(FB, 46 * U), Fnt(FB, 50 * U)
+    for k, it in enumerate(items):
+        g = ease(p * 1.8 - 0.2 - k * 0.15)
+        if g <= 0:
+            continue
+        x = W * 0.08 + k * (cw + gap)
+        y0 = H * 0.32 + (1 - g) * H * 0.3
+        y1 = y0 + H * 0.5
+        d.rounded_rectangle([x, y0, x + cw, y1], radius=int(22 * U), fill=(246, 244, 238))
+        r = 46 * U
+        cx = x + cw / 2
+        d.ellipse([cx - r, y0 + 40 * U, cx + r, y0 + 40 * U + 2 * r], fill=ACC)
+        ctext(d, str(k + 1), nf, cx, y0 + 40 * U + r - nf.size * 0.6, (255, 255, 255))
+        for j, ln in enumerate(wrap(it, tf, cw * 0.84, 3)):
+            ctext(d, ln, tf, cx, y0 + 40 * U + 2 * r + 40 * U + j * tf.size * 1.2, (25, 25, 25))
+    return img
+
+
+def frame_bars(v, t, p, cache, rows=None, highlight_last=True):
+    img, d = base(v, cache, t, "dark", 25)
+    headline_tl(d, v, p)
+    rows = rows if rows is not None else [kv(s) for s in (v.get("items") or [])[:5]]
+    nums = [(parse_num(b) or ("", 0.0, 0, ""))[1] for _, b in rows]
+    mx = max(nums + [1e-9])
+    lf, vf = Fnt(FB, 48 * U), Fnt(FB, 56 * U)
+    top, gap = H * 0.34, H * 0.56 / max(1, len(rows))
+    bh = min(gap * 0.55, 90 * U)
+    for k, ((lab, val), n) in enumerate(zip(rows, nums)):
+        g = ease(p * 1.7 - 0.2 - k * 0.15)
+        if g <= 0:
+            continue
+        cy = top + gap * k + gap / 2
+        d.text((W * 0.08, cy - lf.size * 0.6), lab.upper()[:22], font=lf, fill=(255, 255, 255, int(255 * g)))
+        hi = (k == len(rows) - 1) if highlight_last else (k == 0)
+        L = W * 0.46 * (n / mx if mx else 0.5) * g
+        x0 = W * 0.34
+        d.rounded_rectangle([x0, cy - bh / 2, x0 + max(L, 6 * U), cy + bh / 2], radius=int(10 * U), fill=ACC if hi else (120, 120, 136))
+        d.text((x0 + L + 24 * U, cy - vf.size * 0.6), val, font=vf, fill=(255, 255, 255, int(255 * g)))
+    return img
+
+
+def frame_hbars(v, t, p, cache):
+    rows = [(v.get("left") or "Before", v.get("left_value") or ""), (v.get("right") or "Now", v.get("right_value") or "")]
+    return frame_bars(v, t, p, cache, rows, True)
+
+
+def frame_ranking(v, t, p, cache):
+    return frame_bars(v, t, p, cache, None, False)
+
+
+def frame_percent(v, t, p, cache):
+    img, d = base(v, cache, t, "dark", 25)
+    pn = parse_num(v.get("value") or "")
+    pct = min(1.0, (pn[1] / 100.0) if pn else 0.5)
+    g = ease(p * 1.3)
+    cx, cy, r = W * 0.3, H * 0.52, H * 0.3
+    wd = max(10, int(42 * U))
+    box = [cx - r, cy - r, cx + r, cy + r]
+    d.arc(box, 0, 360, fill=(70, 70, 82), width=wd)
+    if g > 0.01:
+        d.arc(box, -90, -90 + 360 * pct * g, fill=ACC, width=wd)
+    big = Fnt(FB, 150 * U)
+    txt = f"{pn[0]}{pn[1] * g:,.{pn[2]}f}{pn[3]}" if pn else (v.get("value") or "")
+    ctext(d, txt, big, cx, cy - big.size * 0.6, (255, 255, 255))
+    hf, a = Fnt(FB, 78 * U), ease(p * 2 - 0.4)
+    lines = wrap(v["headline"].upper(), hf, W * 0.38)
+    y = cy - len(lines) * hf.size * 0.6
+    for k, ln in enumerate(lines):
+        d.text((W * 0.56, y + k * hf.size * 1.2), ln, font=hf, fill=(255, 255, 255, int(255 * a)))
+    if v.get("sub"):
+        d.text((W * 0.56, y + len(lines) * hf.size * 1.2 + 20 * U), v["sub"], font=Fnt(FSERIF, 46 * U), fill=(230, 200, 185, int(255 * ease(p * 2 - 1))))
+    return img
+
+
+def frame_timeline(v, t, p, cache):
+    img, d = base(v, cache, t, "blue", 30)
+    headline_tl(d, v, p)
+    items = [kv(s) for s in (v.get("items") or [])[:5]]
+    y = H * 0.58
+    x0, x1 = W * 0.1, W * 0.9
+    d.line([(x0, y), (x0 + (x1 - x0) * ease(p * 1.4), y)], fill=(255, 255, 255), width=max(3, int(6 * U)))
+    yf, vf = Fnt(FB, 56 * U), Fnt(FB, 66 * U)
+    n = max(1, len(items))
+    for k, (a_, b_) in enumerate(items):
+        g = ease(p * 1.8 - 0.25 - k * 0.15)
+        if g <= 0:
+            continue
+        x = x0 + (x1 - x0) * (k + 0.5) / n
+        r = 22 * U * (0.5 + 0.5 * g)
+        d.ellipse([x - r, y - r, x + r, y + r], fill=ACC, outline=(255, 255, 255), width=max(2, int(4 * U)))
+        ctext(d, a_, yf, x, y - 110 * U - (1 - g) * 30 * U, (235, 200, 180, int(255 * g)))
+        if b_:
+            ctext(d, b_, vf, x, y + 50 * U + (1 - g) * 30 * U, (255, 255, 255, int(255 * g)))
+    return img
+
+
+def frame_quote(v, t, p, cache):
+    img, d = base(v, cache, t, "dark", 18)
+    qf = Fnt(FSERIF, 360 * U)
+    d.text((W * 0.07, H * 0.02), "“", font=qf, fill=ACC)
+    tf = Fnt(FSERIF, 76 * U)
+    lines = wrap(v["headline"], tf, W * 0.74)
+    y = H / 2 - len(lines) * tf.size * 0.65
+    for k, ln in enumerate(lines):
+        g = ease(p * 1.8 - k * 0.2)
+        d.text((W * 0.14, y + k * tf.size * 1.3 + (1 - g) * 20 * U), ln, font=tf, fill=(255, 255, 255, int(255 * g)))
+    if v.get("sub"):
+        d.text((W * 0.14, y + len(lines) * tf.size * 1.3 + 30 * U), "— " + v["sub"], font=Fnt(FB, 46 * U), fill=ACC)
+    return img
+
+
+def frame_alert(v, t, p, cache):
+    img, d = base(v, cache, t, "red", 30)
+    bf = Fnt(FB, 64 * U)
+    blink = 255 if int(t * 3) % 2 == 0 else 150
+    lab = "BREAKING"
+    lw = bf.getlength(lab) + 60 * U
+    d.rectangle([W * 0.06, H * 0.5, W * 0.06 + lw, H * 0.5 + bf.size * 1.6], fill=(255, 255, 255, blink))
+    d.text((W * 0.06 + 30 * U, H * 0.5 + bf.size * 0.25), lab, font=bf, fill=(180, 20, 20))
+    g = ease(p * 1.6)
+    hf = fit(FB, v["headline"].upper(), W * 0.84, 96 * U)
+    by = H * 0.5 + bf.size * 1.6
+    d.rectangle([0, by, W * g, by + hf.size * 1.8], fill=(15, 15, 18))
+    ta = ease(p * 2 - 0.4)
+    d.text((W * 0.06 + (1 - ta) * 60 * U, by + hf.size * 0.38), v["headline"].upper(), font=hf, fill=(255, 255, 255, int(255 * ta)))
+    if v.get("sub"):
+        sf = fit(FB, v["sub"], W * 0.84, 48 * U)
+        sy = by + hf.size * 1.8
+        d.rectangle([0, sy, W * ease(p * 1.6 - 0.2), sy + sf.size * 1.7], fill=ACC)
+        d.text((W * 0.06, sy + sf.size * 0.3), v["sub"], font=sf, fill=(255, 255, 255, int(255 * ease(p * 2 - 0.8))))
+    return img
+
+
+def frame_receipt(v, t, p, cache):
+    img, d = base(v, cache, t, "dark", 22)
+    rows = [kv(s) for s in (v.get("items") or [])[:5]]
+    if "paper" not in cache:
+        pw = int(W * 0.34)
+        lf, hf = Fnt(FB, 44 * U), Fnt(FB, 58 * U)
+        rh = int(lf.size * 2.1)
+        ph = int(hf.size * 2.6 + rh * (len(rows) + 1.6) + 60 * U)
+        pap = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+        pd_ = ImageDraw.Draw(pap)
+        z = int(14 * U)
+        poly = [(x, z if (x // z) % 2 else 0) for x in range(0, pw + z, z)] + [(x, ph - (z if (x // z) % 2 else 0)) for x in range(pw, -z, -z)]
+        pd_.polygon(poly, fill=(248, 246, 240, 255))
+        ctext(pd_, v["headline"].upper()[:20], hf, pw / 2, z + hf.size * 0.5, (20, 20, 20))
+        y = z + hf.size * 2.2
+        for a_, b_ in rows:
+            pd_.text((40 * U, y), a_[:18], font=lf, fill=(40, 40, 40))
+            pd_.text((pw - 40 * U - lf.getlength(b_), y), b_, font=lf, fill=(40, 40, 40))
+            pd_.line([(40 * U, y + lf.size * 1.5), (pw - 40 * U, y + lf.size * 1.5)], fill=(190, 190, 190), width=2)
+            y += rh
+        if v.get("value"):
+            pd_.text((40 * U, y + 10 * U), "TOTAL", font=hf, fill=(200, 50, 30))
+            pd_.text((pw - 40 * U - hf.getlength(v["value"]), y + 10 * U), v["value"], font=hf, fill=(200, 50, 30))
+        cache["paper"] = pap
+    pap = cache["paper"]
+    show = max(2, int(pap.height * ease(p * 1.3)))
+    part = pap.crop((0, 0, pap.width, show))
+    img.alpha_composite(part, (int(W / 2 - pap.width / 2), int(H / 2 - pap.height / 2)))
+    return img
+
+
+def frame_myth(v, t, p, cache):
+    img, d = base(v, cache, t, "dark", 22)
+    tag, tf = Fnt(FB, 52 * U), Fnt(FB, 70 * U)
+    for k, (word, col, text) in enumerate((("MYTH", (200, 40, 40), v.get("sub") or ""), ("FACT", (40, 170, 80), v["headline"]))):
+        g = ease(p * 1.8 - k * 0.6)
+        if g <= 0:
+            continue
+        y = H * (0.25 + 0.32 * k)
+        tw = tag.getlength(word) + 50 * U
+        x = W * 0.08 - (1 - g) * 80 * U
+        d.rounded_rectangle([x, y, x + tw, y + tag.size * 1.6], radius=int(10 * U), fill=col)
+        d.text((x + 25 * U, y + tag.size * 0.25), word, font=tag, fill=(255, 255, 255))
+        lines = wrap(text, tf, W * 0.6, 2)
+        for j, ln in enumerate(lines):
+            d.text((x + tw + 40 * U, y + j * tf.size * 1.2), ln, font=tf, fill=(255, 255, 255, int(255 * g)) if k else (190, 190, 195, int(255 * g)))
+        if k == 0 and lines:
+            s = ease(p * 2 - 0.6)
+            ww = max(tf.getlength(ln) for ln in lines)
+            for j in range(len(lines)):
+                ly = y + j * tf.size * 1.2 + tf.size * 0.6
+                d.line([(x + tw + 40 * U, ly), (x + tw + 40 * U + ww * s, ly)], fill=(220, 50, 50), width=max(4, int(8 * U)))
+    return img
+
+
+def frame_chapter(v, t, p, cache):
+    img, d = base(v, cache, t, "dark", 20)
+    num = (v.get("value") or "").strip()[:4] or "#"
+    nf = Fnt(FB, 420 * U)
+    g = ease(p * 1.5)
+    d.text((W * 0.07, H / 2 - nf.size * 0.62 + (1 - g) * 60 * U), num, font=nf, fill=(232, 93, 42, int(255 * g)))
+    x = W * 0.07 + nf.getlength(num) + 60 * U
+    d.rectangle([x, H * 0.3, x + 8 * U, H * 0.3 + H * 0.4 * ease(p * 1.6 - 0.2)], fill=(255, 255, 255))
+    hf = Fnt(FB, 88 * U)
+    lines = wrap(v["headline"].upper(), hf, W - x - W * 0.08, 3)
+    y = H / 2 - len(lines) * hf.size * 0.6
+    for k, ln in enumerate(lines):
+        a = ease(p * 2 - 0.5 - k * 0.15)
+        d.text((x + 50 * U + (1 - a) * 40 * U, y + k * hf.size * 1.2), ln, font=hf, fill=(255, 255, 255, int(255 * a)))
+    return img
+
+
+VARIANTS = {"chart": [frame_chart, frame_line], "stat": [frame_stat, frame_stat_split],
+            "list": [frame_list, frame_grid], "compare": [frame_compare, frame_hbars]}
+_VC = {}
+
+
 def render_visual(v, d, seg, i):
-    fn = {"title": frame_title, "chart": frame_chart, "card": frame_card}.get(v.get("type"))
+    typ = v.get("type")
+    if typ in VARIANTS:
+        n_ = _VC.get(typ, 0); _VC[typ] = n_ + 1
+        fn = VARIANTS[typ][n_ % 2]
+    else:
+        fn = {"title": frame_title, "card": frame_card, "ranking": frame_ranking, "percent": frame_percent,
+              "timeline": frame_timeline, "quote": frame_quote, "alert": frame_alert, "receipt": frame_receipt,
+              "myth": frame_myth, "chapter": frame_chapter}.get(typ)
     if not fn:
         return False
+    v = dict(v, _i=i)
     fdir = os.path.join(work, f"g{i}")
     os.makedirs(fdir, exist_ok=True)
     cache = {}
-    anim = min(int(d * 30), 45)  # ~1.5s of build-up animation, then hold with a slow push-in
+    anim = min(int(d * 30), 54)  # ~1.8s of build-up animation, then hold with a slow push-in
     try:
         for k in range(anim):
-            fn(v, k / 30, k / max(1, anim - 1), cache).convert("RGB").save(os.path.join(fdir, f"f{k:03d}.png"))
+            fr = fn(v, k / 30, k / max(1, anim - 1), cache)
+            if v.get("type") != "card":
+                fr.alpha_composite(vignette())
+            fr.convert("RGB").save(os.path.join(fdir, f"f{k:03d}.png"))
     except Exception as e:
         print("Graphic failed, using footage:", e)
         return False
@@ -414,6 +897,71 @@ def render_visual(v, d, seg, i):
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
     return True
 
+def make_footage(i, q, d, seg, want_photo):
+    """Fast-cut real footage for d seconds (clips first, photo as backup). Returns False if nothing fits."""
+    vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1"
+    link, author = (None, None) if want_photo else find_clip(q, d)
+    if not link and i < 3:
+        for alt in (plan.get("fallback_query", ""), "american city aerial", "united states street", "new york city traffic"):
+            if alt and not link:
+                link, author = find_clip(alt, d)
+    if link:
+        n = 1 if d < 5 else min(4, math.ceil(d / 3.5))
+        picks = [(link, author)]
+        for _ in range(n - 1):
+            l2, a2 = find_clip(q, d / n)
+            if l2: picks.append((l2, a2))
+        parts = []
+        for k, (lk, au) in enumerate(picks):
+            raw = os.path.join(work, f"r{i}_{k}_{int(d * 100)}.mp4")
+            with requests.get(lk, stream=True, timeout=120) as r:
+                r.raise_for_status()
+                with open(raw, "wb") as f:
+                    for chunk in r.iter_content(1 << 20): f.write(chunk)
+            credits.add(au)
+            pd = d / len(picks)
+            F = max(1, int(pd * 30))
+            mv = (i + k) % 4
+            if mv == 0:
+                zp = "zoompan=z='min(1+0.0011*on,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+            elif mv == 1:
+                zp = "zoompan=z='max(1.15-0.0011*on,1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+            elif mv == 2:
+                zp = f"zoompan=z=1.12:x='(iw-iw/zoom)*on/{F}':y='ih/2-(ih/zoom/2)'"
+            else:
+                zp = f"zoompan=z=1.12:x='(iw-iw/zoom)*(1-on/{F})':y='ih/2-(ih/zoom/2)'"
+            part = os.path.join(work, f"c{i}_{k}_{int(d * 100)}.mp4")
+            run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", raw, "-t", f"{pd:.3f}", "-an", "-vf", vf + "," + zp + f":d=1:s={W}x{H}:fps=30,setsar=1",
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", part])
+            parts.append(part)
+        if len(parts) == 1:
+            os.replace(parts[0], seg)
+        else:
+            lst = os.path.join(work, f"c{i}_{int(d * 100)}.txt")
+            with open(lst, "w") as f:
+                f.writelines(f"file '{p_}'\n" for p_ in parts)
+            run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-t", f"{d:.2f}",
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
+        return True
+    if UNSPLASH:
+        url, author = find_photo(q)
+        if url:
+            img = os.path.join(work, f"i{i}_{int(d * 100)}.jpg")
+            open(img, "wb").write(requests.get(url, timeout=60).content)
+            photo_credits.add(author)
+            frames = int(d * 30) + 1
+            z = "min(1+0.0012*on,1.25)" if i % 2 == 0 else "max(1.25-0.0012*on,1)"
+            px = "iw/2-(iw/zoom/2)" if i % 3 else f"(iw-iw/zoom)*on/{frames}"
+            kb = (f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},"
+                  f"zoompan=z='{z}':x='{px}':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps=30,setsar=1")
+            run(["ffmpeg", "-y", "-loop", "1", "-i", img, "-t", f"{d:.2f}", "-vf", kb,
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
+            return True
+    if want_photo:
+        return make_footage(i, q, d, seg, False)
+    return False
+
+
 t0 = 0.0
 starts = []
 for i, sc in enumerate(plan["scenes"]):
@@ -421,42 +969,30 @@ for i, sc in enumerate(plan["scenes"]):
     text = sc["text"].strip()
     a = os.path.join(work, f"a{i}.mp3"); speak(text, a)
     d = duration(a) + 0.25
-    # Mix: first 2 scenes always video; afterwards every 3rd scene is a photo (~70% video)
     seg = os.path.join(work, f"s{i}.mp4")
-    vis = sc.get("visual")
+    q = sc.get("query", plan.get("fallback_query", "city"))
+    vis = sc.get("visual") if i >= 3 else None  # the video ALWAYS opens on real footage
+    done = False
     if vis:
-        vis = dict(vis, query=sc.get("query", ""))
-    graphic = bool(vis) and render_visual(vis, d, seg, i)
-    want_photo = UNSPLASH and i >= 2 and i % 3 == 2
-    link, author = (None, None) if (want_photo or graphic) else find_clip(sc.get("query", plan.get("fallback_query", "city")), d)
-    vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1"
-    if graphic:
-        pass
-    elif link:
-        raw = os.path.join(work, f"r{i}.mp4")
-        with requests.get(link, stream=True, timeout=120) as r:
-            r.raise_for_status()
-            with open(raw, "wb") as f:
-                for chunk in r.iter_content(1 << 20): f.write(chunk)
-        credits.add(author)
-        zoom = f",zoompan=z='min(zoom+0.0007,1.08)':d=1:s={W}x{H}:fps=30"
-        run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", raw, "-t", f"{d:.2f}", "-an", "-vf", vf + zoom,
-             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
-    elif UNSPLASH and (photo := find_photo(sc.get("query", plan.get("fallback_query", "city"))))[0]:
-        url, author = photo
-        img = os.path.join(work, f"i{i}.jpg")
-        open(img, "wb").write(requests.get(url, timeout=60).content)
-        photo_credits.add(author)
-        frames = int(d * 30) + 1
-        zin = i % 2 == 0
-        z = "min(1+0.0012*on,1.25)" if zin else "max(1.25-0.0012*on,1)"
-        px = "iw/2-(iw/zoom/2)" if i % 3 else f"(iw-iw/zoom)*on/{frames}"
-        kb = (f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},"
-              f"zoompan=z='{z}':x='{px}':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps=30,setsar=1")
-        run(["ffmpeg", "-y", "-loop", "1", "-i", img, "-t", f"{d:.2f}", "-vf", kb,
-             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
-    else:
-        # Do not replace a missing US scene with unrelated foreign stock or a black screen.
+        # Presentation graphics are short inserts (max ~2.8s); the rest of the scene is footage.
+        vis = dict(vis, query=q)
+        gd = min(d, 2.8)
+        gseg = os.path.join(work, f"g{i}.mp4")
+        if render_visual(vis, gd, gseg, i):
+            rest = d - gd
+            fseg = os.path.join(work, f"f{i}.mp4")
+            if rest < 0.4:
+                os.replace(gseg, seg); done = True
+            elif make_footage(i, q, rest, fseg, False):
+                lst = os.path.join(work, f"gf{i}.txt")
+                with open(lst, "w") as f:
+                    f.write(f"file '{gseg}'\nfile '{fseg}'\n")
+                run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-t", f"{d:.2f}",
+                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
+                done = True
+    if not done:
+        done = make_footage(i, q, d, seg, UNSPLASH and i >= 3 and i % 3 == 2)
+    if not done:
         print("No matching US stock for scene", i, "— using a titled graphic")
         headline = " ".join(text.split()[:7]).upper()[:60]
         if not render_visual({"type": "title", "headline": headline, "color": "dark"}, d, seg, i):
