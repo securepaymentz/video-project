@@ -1,4 +1,4 @@
-"""stock-engine v8 (installed by Studio)
+"""stock-engine v9 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -53,16 +53,59 @@ def speak(text, path):
 
 used = set()
 
+# Stock libraries have incomplete geographic metadata. Never infer anyone's
+# nationality from appearance; use search context and explicit location clues.
+US_WORDS = {"usa", "us", "american", "america", "united states", "new york", "los angeles", "las vegas", "chicago", "miami", "california", "texas", "florida", "washington", "boston", "philadelphia", "atlanta", "seattle", "detroit", "phoenix", "san francisco", "houston", "denver"}
+FOREIGN_WORDS = {"india", "indian", "mumbai", "delhi", "bangalore", "london", "england", "united kingdom", "paris", "france", "berlin", "germany", "tokyo", "japan", "china", "beijing", "dubai", "uae", "brazil", "sao paulo", "mexico", "canada", "toronto", "australia", "sydney", "russia", "moscow", "pakistan", "indonesia", "italy", "rome", "spain", "madrid", "south africa", "africa", "europe", "asia"}
+STOP = {"the", "a", "an", "of", "and", "in", "on", "for", "to", "with", "from", "usa", "us", "american", "america", "united", "states", "video", "photo", "footage", "cinematic", "slow", "motion", "drone", "aerial", "orbit", "360", "timelapse"}
+
+
+def words(s):
+    return set(re.findall(r"[a-z0-9]+", str(s).lower()))
+
+
+def subject(q):
+    return words(q) - STOP
+
+
+def search_terms(q):
+    q = str(q or "").strip()[:85]
+    if not q or not subject(q):
+        return []
+    has_us = any(re.search(r"\b" + re.escape(w) + r"\b", q.lower()) for w in US_WORDS)
+    return [q] if has_us else [q + " USA", q + " United States"]
+
+
+def candidate_ok(query, metadata, location=""):
+    text = str(metadata or "").lower()
+    place = str(location or "").lower()
+    if any(re.search(r"\b" + re.escape(w) + r"\b", text + " " + place) for w in FOREIGN_WORDS):
+        return False
+    # Search rank is not proof of filming location; require an explicit US clue.
+    if not any(re.search(r"\b" + re.escape(w) + r"\b", text + " " + place) for w in US_WORDS):
+        return False
+    if place and not any(re.search(r"\b" + re.escape(w) + r"\b", place) for w in US_WORDS):
+        return False
+    terms = subject(query)
+    # When the script names a city, a different American city is still wrong.
+    places = {w for w in US_WORDS if " " in w and w != "united states" and re.search(r"\b" + re.escape(w) + r"\b", query.lower())}
+    if places and not any(re.search(r"\b" + re.escape(w) + r"\b", text + " " + place) for w in places):
+        return False
+    return not terms or bool(terms & words(text + " " + place))
+
 
 def find_photo(query):
+    if not UNSPLASH:
+        return None, None
     orient = "portrait" if vertical else "landscape"
-    for q in [query, " ".join(query.split()[:2]), plan.get("fallback_query", "city")]:
+    for q in search_terms(query):
         r = requests.get("https://api.unsplash.com/search/photos", headers={"Authorization": f"Client-ID {UNSPLASH}"},
                          params={"query": q, "orientation": orient, "per_page": 15, "content_filter": "high"}, timeout=30)
         if r.status_code != 200:
             print("Unsplash error", r.status_code, r.text[:200]); continue
         for ph in r.json().get("results", []):
-            if ph["id"] in used: continue
+            metadata = " ".join(str(ph.get(k) or "") for k in ("description", "alt_description", "slug")) + " " + " ".join(str(t.get("title") or "") for t in ph.get("tags", []))
+            if ph["id"] in used or not candidate_ok(query, metadata, ph.get("location", {}).get("name") if isinstance(ph.get("location"), dict) else ""): continue
             used.add(ph["id"])
             try:  # Unsplash guidelines: report the download
                 requests.get(ph["links"]["download_location"], headers={"Authorization": f"Client-ID {UNSPLASH}"}, timeout=15)
@@ -75,7 +118,7 @@ def find_photo(query):
 def find_pixabay(query, need):
     if not PIXABAY:
         return None, None
-    for q in [query, " ".join(query.split()[:2]), plan.get("fallback_query", "city")]:
+    for q in search_terms(query):
         try:
             r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY, "q": q[:100], "per_page": 30,
                              "safesearch": "true", "order": "popular"}, timeout=30)
@@ -85,7 +128,7 @@ def find_pixabay(query, need):
             print("Pixabay error", r.status_code, r.text[:200]); continue
         hits = []
         for v in r.json().get("hits", []):
-            if ("pb", v["id"]) in used: continue
+            if ("pb", v["id"]) in used or not candidate_ok(query, v.get("tags", "")): continue
             vs = v.get("videos", {})
             opts = [f for f in (vs.get("large"), vs.get("medium"), vs.get("small")) if f and f.get("url") and f.get("width")]
             if not opts: continue
@@ -105,12 +148,12 @@ def find_clip(query, need):
     if link or not PEXELS:
         return link, author
     orient = "portrait" if vertical else "landscape"
-    for q in [query, " ".join(query.split()[:2]), plan.get("fallback_query", "city")]:
+    for q in search_terms(query):
         r = requests.get("https://api.pexels.com/videos/search", headers={"Authorization": PEXELS},
                          params={"query": q, "orientation": orient, "per_page": 15, "size": "medium"}, timeout=30)
         if r.status_code != 200:
             print("Pexels error", r.status_code, r.text[:200]); continue
-        vids = [v for v in r.json().get("videos", []) if v["id"] not in used]
+        vids = [v for v in r.json().get("videos", []) if v["id"] not in used and candidate_ok(query, v.get("url", "").split("/video/")[-1])]
         vids.sort(key=lambda v: (v.get("duration", 0) < need, random.random()))
         for v in vids:
             files = [f for f in v["video_files"] if f.get("file_type") == "video/mp4" and f.get("height")]
@@ -220,8 +263,8 @@ def object_image(desc, query):
                               headers={"Authorization": f"Bearer {OPENAI}", "Content-Type": "application/json"},
                               json={"model": IMG_MODEL, "size": "1024x1024", "quality": "medium", "background": "transparent",
                                     "output_format": "png", "n": 1,
-                                    "prompt": f"Photorealistic product photo of {desc}, isolated, centered, full object visible, "
-                                              "studio lighting, soft shadow, transparent background, no text, no logos."},
+                                    "prompt": f"Photorealistic product photo of {desc}, as sold in the United States, isolated, centered, full object visible, "
+                                              "American packaging if relevant, studio lighting, soft shadow, transparent background, no text, no logos."},
                               timeout=180)
             r.raise_for_status()
             path = os.path.join(work, f"obj{random.randint(0, 1 << 30)}.png")
@@ -408,8 +451,11 @@ for i, sc in enumerate(plan["scenes"]):
         run(["ffmpeg", "-y", "-loop", "1", "-i", img, "-t", f"{d:.2f}", "-vf", kb,
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
     else:
-        run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"color=c=0x111111:s={W}x{H}:r=30", "-t", f"{d:.2f}",
-             "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", seg])
+        # Do not replace a missing US scene with unrelated foreign stock or a black screen.
+        print("No matching US stock for scene", i, "— using a titled graphic")
+        headline = " ".join(text.split()[:7]).upper()[:60]
+        if not render_visual({"type": "title", "headline": headline, "color": "dark"}, d, seg, i):
+            raise RuntimeError(f"Could not render scene {i} without unrelated stock")
     pad = os.path.join(work, f"p{i}.wav")
     run(["ffmpeg", "-y", "-i", a, "-af", "apad=pad_dur=0.25", "-t", f"{d:.2f}", "-ar", "44100", "-ac", "2", pad])
     segments.append(seg); audios.append(pad)
