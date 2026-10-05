@@ -1,4 +1,4 @@
-"""stock-engine v56 (installed by Studio)
+"""stock-engine v57 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -7,7 +7,11 @@ import requests
 
 out = sys.argv[1]
 os.makedirs(os.path.dirname(out), exist_ok=True)
-plan = json.loads(base64.b64decode(os.environ["PLAN"]).decode("utf-8"))
+if os.environ.get("PLAN"):
+    plan = json.loads(base64.b64decode(os.environ["PLAN"]).decode("utf-8"))
+else:
+    with open(os.environ["PLAN_FILE"], "r", encoding="utf-8") as f:
+        plan = json.load(f)
 work = tempfile.mkdtemp()
 vertical = plan.get("aspect", "9:16") == "9:16"
 W, H = (1080, 1920) if vertical else (1920, 1080)
