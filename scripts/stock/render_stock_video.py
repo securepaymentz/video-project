@@ -1,4 +1,4 @@
-"""stock-engine v48 (installed by Studio)
+"""stock-engine v49 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1344,14 +1344,15 @@ reporter_seg = reporter_aud = None
 reporter_d = 0.0
 intro_seg = intro_aud = None
 intro_d = 0.0
-opener_prompt = str(plan.get("opener_prompt") or "").strip()
-if LV_KEY and opener_prompt and plan.get("reporter_on", True):
+reporter_prompt = str(plan.get("reporter_prompt") or "").strip()
+hook_line = str(plan.get("hook") or "").strip()
+if LV_KEY and reporter_prompt and plan.get("reporter_on", True):
     try:
         import time
         lh = {"Authorization": f"Bearer {LV_KEY}", "Content-Type": "application/json"}
         body = {
             "model": "google/gemini-omni-1.1-flash",
-            "input": opener_prompt + " Photorealistic cinematic opening shot in the United States, in a single continuous shot, no scene cuts, no on-screen text, no dialogue, no people posing for the camera, soft ambient sound only.",
+            "input": reporter_prompt + " A middle-aged American male news reporter stands on this exact set and speaks directly to the camera in clear American English with a confident broadcast delivery, saying exactly: \"" + (hook_line or "Here is what is really happening.") + "\" Photorealistic, natural lip-sync, single continuous medium shot, no scene cuts, no on-screen text, no other people talking.",
             "response_format": {"type": "video", "resolution": "1080p", "duration": "5s", "aspect_ratio": "9:16" if vertical else "16:9"},
         }
         r = requests.post("https://ai.gateway.lovable.dev/v1/videos", headers=lh, json=body, timeout=120)
