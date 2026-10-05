@@ -1,4 +1,4 @@
-"""stock-engine v52 (installed by Studio)
+"""stock-engine v56 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1253,11 +1253,12 @@ def render_visual(v, d, seg, i):
     # Background = the scene's own footage, darkened, so viewers keep watching video under the graphic.
     bg = os.path.join(work, f"gb{i}.mp4")
     has_bg = False
-    # Never a black screen: try the scene's subject, then the video's theme, then generic US money/city footage.
+    # Use the scene's selected image for a presentation; only automatic videos search fallbacks.
     tries = [] if v.get("_nobg") else [v.get("query")]
     # Theme fallbacks stay on-topic (no generic street shots that end up showing taxis).
     # Never generic money shots: fall back to real American people at work.
-    tries += [plan.get("fallback_query"), random.choice(["american workers office USA", "american construction workers", "american warehouse workers", "american store employees", "american family kitchen"])]
+    if not MY_CLIPS:
+        tries += [plan.get("fallback_query"), random.choice(["american workers office USA", "american construction workers", "american warehouse workers", "american store employees", "american family kitchen"])]
     for q_ in [x for x in tries if x]:
         try:
             if make_footage(i, q_, d + 0.1, bg, False) or make_footage(i, q_, d + 0.1, bg, True):
@@ -1267,6 +1268,8 @@ def render_visual(v, d, seg, i):
     if has_bg:
         bg_in = ["-i", bg]
     else:
+        if MY_CLIPS and not v.get("_nobg"):
+            raise RuntimeError(f"Selected background image failed for scene {i}; refusing to replace it with unrelated footage")
         bg_in = ["-f", "lavfi", "-i", f"color=c=0x101014:s={W}x{H}:r=30:d={d + 0.1:.2f}"]
     fc = (f"[0:v]scale={W}:{H},setsar=1,colorlevels=romax=0.55:gomax=0.55:bomax=0.55,gblur=sigma=2[b];"
           f"[1:v]format=rgba,tpad=stop_mode=clone:stop_duration={hold + 0.1:.2f}[g];"
@@ -1278,6 +1281,7 @@ def render_visual(v, d, seg, i):
 
 MY_CLIPS = [c for c in (plan.get("my_clips") or []) if isinstance(c, dict) and c.get("url")]
 CUR_CLIP = None
+SCENE_CLIPS = []
 
 
 def use_my_clip(i, d, seg, clip):
@@ -1308,16 +1312,39 @@ def use_my_clip(i, d, seg, clip):
     return True
 
 
+def make_scene_footage(i, q, d, seg, want_photo=False):
+    """Cut between all distinct approved images assigned to this spoken scene."""
+    if not MY_CLIPS:
+        return make_footage(i, q, d, seg, want_photo)
+    chosen = SCENE_CLIPS or ([CUR_CLIP] if CUR_CLIP else [])
+    if not chosen:
+        return False
+    if len(chosen) == 1:
+        return use_my_clip(i, d, seg, chosen[0])
+    parts = []
+    for k, clip in enumerate(chosen):
+        part = os.path.join(work, f"selected{i}_{k}_{int(d * 100)}.mp4")
+        use_my_clip(i * 100 + k, d / len(chosen), part, clip)
+        parts.append(part)
+    lst = os.path.join(work, f"selected{i}_{int(d * 100)}.txt")
+    with open(lst, "w") as f:
+        f.writelines(f"file '{p}'\n" for p in parts)
+    run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-t", f"{d:.2f}",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
+    return True
+
+
 def make_footage(i, q, d, seg, want_photo):
     """Fast-cut real footage for d seconds (clips first, photo as backup). Returns False if nothing fits."""
     if MY_CLIPS:
-        clip = CUR_CLIP if (CUR_CLIP and i < 900) else MY_CLIPS[i % len(MY_CLIPS)]
+        clip = CUR_CLIP if (CUR_CLIP and i < 900) else None
+        if not clip:
+            print("No approved clip assigned to scene", i)
+            return False
         try:
             return use_my_clip(i, d, seg, clip)
         except Exception as e:
-            print("Picked clip failed, trying another picked clip:", e)
-            try: return use_my_clip(i, d, seg, MY_CLIPS[(i + 1) % len(MY_CLIPS)])
-            except Exception as e2: print("Picked clip failed:", e2)
+            print("Picked clip failed; not substituting unrelated footage:", e)
             return False
     vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1"
     link, author = (None, None) if want_photo else find_clip(q, d)
@@ -1541,28 +1568,33 @@ for i, sc in enumerate(plan["scenes"]):
     q = sc.get("query", plan.get("fallback_query", "city"))
     set_scene_subject(sc.get("subject") or "")
     CUR_CLIP = sc.get("clip") if isinstance(sc.get("clip"), dict) and sc["clip"].get("url") else None
-    vis = sc.get("visual") if i >= 3 else None  # the video ALWAYS opens on real footage
+    SCENE_CLIPS = [c for c in sc.get("clips", []) if isinstance(c, dict) and c.get("url")] or ([CUR_CLIP] if CUR_CLIP else [])
+    presentation_only = bool(sc.get("presentationOnly"))
+    vis = sc.get("visual") if (i >= 3 or presentation_only) else None
     done = False
     if vis:
         gfx_starts.append(t0)
-        # Presentation graphics are short inserts (max ~2.8s); the rest of the scene is footage.
-        vis = dict(vis, query=q)
-        gd = min(d, 2.8)
+        # A scene with no matching approved image is a full-length presentation,
+        # including opening scenes; never try another stock image or paid generation.
+        vis = dict(vis, query=q, _nobg=presentation_only)
+        gd = d if presentation_only else min(d, 2.8)
         gseg = os.path.join(work, f"g{i}.mp4")
         if render_visual(vis, gd, gseg, i):
             rest = d - gd
             fseg = os.path.join(work, f"f{i}.mp4")
             if rest < 0.4:
                 os.replace(gseg, seg); done = True
-            elif make_footage(i, q, rest, fseg, False):
+            elif make_scene_footage(i, q, rest, fseg):
                 lst = os.path.join(work, f"gf{i}.txt")
                 with open(lst, "w") as f:
                     f.write(f"file '{gseg}'\nfile '{fseg}'\n")
                 run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-t", f"{d:.2f}",
                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
                 done = True
+    if presentation_only and not done:
+        raise RuntimeError(f"Could not render presentation for scene {i}; refusing to use unrelated footage")
     if not done:
-        done = make_footage(i, q, d, seg, UNSPLASH and i >= 3 and i % 3 == 2)
+        done = make_scene_footage(i, q, d, seg, UNSPLASH and i >= 3 and i % 3 == 2)
     if not done and SCENE_SUBJECT and SCENE_SUBJECT != q.lower():
         # Same subject, simpler search (e.g. just "eggs") — clip first, then a photo with slow motion.
         try:
