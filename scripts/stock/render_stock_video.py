@@ -1,4 +1,4 @@
-"""stock-engine v67 (installed by Studio)
+"""stock-engine v72 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1589,7 +1589,8 @@ for i, sc in enumerate(plan["scenes"]):
         # A scene with no matching approved image is a full-length presentation,
         # including opening scenes; never try another stock image or paid generation.
         vis = dict(vis, query=q, _nobg=presentation_only)
-        gd = d if presentation_only else min(d, 2.8)
+        # Presentation graphics stay on screen up to 30 seconds so people can read them.
+        gd = d if presentation_only else min(d, 30.0)
         gseg = os.path.join(work, f"g{i}.mp4")
         if render_visual(vis, gd, gseg, i):
             rest = d - gd
@@ -1937,6 +1938,59 @@ if plan.get("data_callouts", True):
         card_inputs.append(cp); card_filters.append((s0, s1, "text")); last_end = s1
     print("Data callouts:", data_n)
 
+# Every video stays dynamic: every ~8s of a non-graphic scene gets a free on-screen
+# element, alternating a text panel and an "interactive tablet" showing a frame of
+# this same scene (so the picture always matches what is being said).
+def tablet_shot(t, path):
+    try:
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{t:.2f}", "-i", os.path.join(work, "video.mp4"),
+                        "-frames:v", "1", path], check=True)
+        return Image.open(path).convert("RGB")
+    except Exception:
+        return None
+txt_n = 0
+for (i, st, d, g) in card_spans:
+    if g or d < 6: continue
+    sc = plan["scenes"][i]
+    head = " ".join(str(sc.get("subject") or sc.get("query") or "").upper().split()[:5])
+    words = str(sc.get("text", "")).split()
+    k = 0; s0 = st + 1.0
+    while s0 + 4.5 <= st + d - 0.3:
+        s1 = min(s0 + 4.5, st + d - 0.3)
+        if free_slot(s0, s1):
+            chunk = " ".join(words[k * 7:k * 7 + 7]) or " ".join(words[:7])
+            im = Image.new("RGBA", (W, H), (0, 0, 0, 0)); dr = ImageDraw.Draw(im)
+            m = int(W * 0.05)
+            shot = tablet_shot(min(st + d - 0.5, s1 + 2.0), os.path.join(work, f"tab{txt_n}.jpg")) if (txt_n % 2 == 1) else None
+            if shot is not None:
+                # tablet mockup on the right with the scene picture + caption bar
+                tw = int(W * 0.36); th = int(tw * 0.70); bz = int(tw * 0.04)
+                x0 = W - m - tw; y0 = int(H * 0.12)
+                dr.rounded_rectangle([x0 + 8, y0 + 10, x0 + tw + 8, y0 + th + 10], radius=int(tw * 0.06), fill=(0, 0, 0, 120))
+                dr.rounded_rectangle([x0, y0, x0 + tw, y0 + th], radius=int(tw * 0.06), fill=(18, 18, 22, 255), outline=(90, 90, 100, 255), width=3)
+                sw, sh = tw - 2 * bz, th - 2 * bz
+                scr = ImageOps.fit(shot, (sw, sh), method=Image.Resampling.LANCZOS).convert("RGBA")
+                bar = int(sh * 0.24); bd = ImageDraw.Draw(scr)
+                bd.rectangle([0, sh - bar, sw, sh], fill=(10, 10, 14, 215))
+                bd.rectangle([0, sh - bar, int(sw * 0.02), sh], fill=(255, 140, 0, 255))
+                f1, fs1 = fit_font(bd, head or chunk, int(bar * 0.42), int(sw * 0.9))
+                bd.text((int(sw * 0.05), sh - bar + (bar - fs1) // 2), head or chunk, font=f1, fill=(255, 196, 0, 255))
+                im.paste(scr, (x0 + bz, y0 + bz), scr)
+                dr.ellipse([x0 + tw // 2 - 4, y0 + bz // 2 - 4, x0 + tw // 2 + 4, y0 + bz // 2 + 4], fill=(60, 60, 70, 255))
+            else:
+                pw = int(W * 0.55); top = int(H * 0.10)
+                f1, fs1 = fit_font(dr, head or chunk, int(H * 0.06), pw - m)
+                f2, fs2 = fit_font(dr, chunk, int(H * 0.04), pw - m)
+                ph = fs1 + fs2 + int(H * 0.07)
+                dr.rounded_rectangle([m, top, m + pw, top + ph], radius=int(H * 0.015), fill=(10, 10, 14, 200))
+                dr.rectangle([m, top, m + int(W * 0.008), top + ph], fill=(255, 140, 0, 255))
+                dr.text((m + int(W * 0.025), top + int(H * 0.025)), head or chunk, font=f1, fill=(255, 196, 0, 255))
+                if head: dr.text((m + int(W * 0.025), top + int(H * 0.035) + fs1), chunk, font=f2, fill=(255, 255, 255, 255))
+            cp = os.path.join(work, f"txt{txt_n}.png"); im.save(cp); txt_n += 1
+            card_inputs.append(cp); card_filters.append((s0, s1, "text"))
+        k += 1; s0 += 8.0
+print("Text panels:", txt_n)
+
 def card_chain(src, first_idx):
     # full-screen AI pictures fade in/out; data callouts fade over the footage
     chain, cur = [], src
@@ -1949,17 +2003,24 @@ def card_chain(src, first_idx):
 
 if frame != "none" and os.path.exists(ov):
     cc, last = card_chain("s", 3)
-    run(["ffmpeg", "-y", "-i", os.path.join(work, "video.mp4"), "-i", os.path.join(work, "voice.wav"), "-i", ov,
+    run(["ffmpeg", "-y", "-i", os.path.join(work, "video.mp4"), "-i", os.path.join(work, "voice.wav"), "-loop", "1", "-i", ov,
          *sum([["-loop", "1", "-i", c] for c in card_inputs], []),
-         "-filter_complex", ";".join([f"[0:v]subtitles={os.path.join(work, 'subs.ass')}[s]"] + cc + [f"[2:v]scale={W}:{H}[fr];[{last}][fr]overlay=0:0:shortest=1[v]"]),
+         "-filter_complex", ";".join([f"[0:v]subtitles={os.path.join(work, 'subs.ass')}[s]"] + cc + [f"[2:v]scale={W}:{H}[fr];[{last}][fr]overlay=0:0:eof_action=pass[v]"]),
          "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out])
+         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-t", f"{t0:.2f}", "-shortest", "-movflags", "+faststart", out])
 else:
     cc, last = card_chain("s", 2)
     run(["ffmpeg", "-y", "-i", os.path.join(work, "video.mp4"), "-i", os.path.join(work, "voice.wav"),
          *sum([["-loop", "1", "-i", c] for c in card_inputs], []),
          "-filter_complex", ";".join([f"[0:v]subtitles={os.path.join(work, 'subs.ass')}[s]"] + cc + [f"[{last}]null[v]"]), "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out])
+         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-t", f"{t0:.2f}", "-shortest", "-movflags", "+faststart", out])
+
+# Never ship a broken file: the finished video must be about as long as the narration.
+_dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", out],
+                            capture_output=True, text=True).stdout.strip() or 0)
+print(f"Final video length: {_dur:.1f}s (expected {t0:.1f}s)")
+if _dur < max(3.0, t0 * 0.8):
+    raise SystemExit(f"Final video is too short ({_dur:.1f}s of {t0:.1f}s) - render failed")
 
 desc = plan.get("description", "")
 credit_lines = []
