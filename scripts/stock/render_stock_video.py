@@ -1,4 +1,4 @@
-"""stock-engine v33 (installed by Studio)
+"""stock-engine v35 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1222,8 +1222,16 @@ if HG_AVATAR and not HG_TYPE:
     HG_TYPE = "avatar"  # a saved Avatar ID is a standard/Avatar III presenter, not a talking photo
 reporter_seg = reporter_aud = None
 reporter_d = 0.0
+intro_seg = intro_aud = None
+intro_d = 0.0
+loop_clips = []  # [(seg, aud, dur, line), ...] — 2-3 DIFFERENT retention lines, rotated so repeats never sound identical
 rep = plan.get("reporter") or {}
-if HG_KEY and rep.get("line") and plan.get("reporter_on", True):
+rep_lines = [str(x).strip()[:240] for x in (rep.get("lines") or []) if str(x).strip()][:3]
+if rep.get("line") and str(rep["line"]).strip() not in rep_lines:
+    rep_lines.insert(0, str(rep["line"]).strip()[:240])
+if not rep_lines and rep.get("line"):
+    rep_lines = [str(rep["line"]).strip()[:240]]
+if HG_KEY and rep_lines and plan.get("reporter_on", True):
     try:
         hh = {"X-Api-Key": HG_KEY, "Content-Type": "application/json"}
         vid = os.environ.get("HEYGEN_VOICE_ID", "").strip()
@@ -1244,33 +1252,52 @@ if HG_KEY and rep.get("line") and plan.get("reporter_on", True):
             HG_AVATAR = random.choice((sharp or pool)[:40])["avatar_id"]; HG_TYPE = "avatar"
         bg_url, _a = find_photo(str(rep.get("setting") or plan.get("fallback_query", "american office")))
         char = {"type": "talking_photo", "talking_photo_id": HG_AVATAR} if "photo" in HG_TYPE else {"type": "avatar", "avatar_id": HG_AVATAR, "avatar_style": "normal"}
-        vin = {"character": char, "voice": {"type": "text", "input_text": str(rep["line"])[:220], "voice_id": vid}}
-        if bg_url:
-            vin["background"] = {"type": "image", "url": bg_url}
         dim = {"width": 720, "height": 1280} if vertical else {"width": 1280, "height": 720}
-        r = requests.post("https://api.heygen.com/v2/video/generate", headers=hh, json={"video_inputs": [vin], "dimension": dim}, timeout=60)
-        r.raise_for_status()
-        hg_id = r.json()["data"]["video_id"]
         import time
-        hg_url = None
-        for _ in range(120):  # up to ~20 min
-            time.sleep(10)
-            st = requests.get(f"https://api.heygen.com/v1/video_status.get?video_id={hg_id}", headers=hh, timeout=60).json().get("data", {})
-            if st.get("status") == "completed":
-                hg_url = st.get("video_url"); break
-            if st.get("status") == "failed":
-                raise RuntimeError(f"HeyGen failed: {st.get('error')}")
-        if not hg_url:
-            raise RuntimeError("HeyGen took too long")
-        rawh = os.path.join(work, "reporter_raw.mp4")
-        open(rawh, "wb").write(requests.get(hg_url, timeout=180).content)
-        reporter_seg = os.path.join(work, "reporter.mp4")
-        run(["ffmpeg", "-y", "-i", rawh, "-an", "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1",
-             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", reporter_seg])
-        reporter_aud = os.path.join(work, "reporter.wav")
-        run(["ffmpeg", "-y", "-i", rawh, "-vn", "-ar", "44100", "-ac", "2", reporter_aud])
-        reporter_d = min(duration(reporter_seg), duration(reporter_aud))
-        print(f"Reporter clip ready ({reporter_d:.1f}s) at: {rep.get('setting')}")
+        def hg_clip(line, name):
+            vin = {"character": char, "voice": {"type": "text", "input_text": str(line)[:240], "voice_id": vid}}
+            if bg_url:
+                vin["background"] = {"type": "image", "url": bg_url}
+            r = requests.post("https://api.heygen.com/v2/video/generate", headers=hh, json={"video_inputs": [vin], "dimension": dim}, timeout=60)
+            r.raise_for_status()
+            return r.json()["data"]["video_id"]
+        def hg_wait(hg_id, name):
+            hg_url = None
+            for _ in range(120):  # up to ~20 min
+                time.sleep(10)
+                st = requests.get(f"https://api.heygen.com/v1/video_status.get?video_id={hg_id}", headers=hh, timeout=60).json().get("data", {})
+                if st.get("status") == "completed":
+                    hg_url = st.get("video_url"); break
+                if st.get("status") == "failed":
+                    raise RuntimeError(f"HeyGen failed: {st.get('error')}")
+            if not hg_url:
+                raise RuntimeError("HeyGen took too long")
+            rawh = os.path.join(work, f"{name}_raw.mp4")
+            open(rawh, "wb").write(requests.get(hg_url, timeout=180).content)
+            seg = os.path.join(work, f"{name}.mp4")
+            run(["ffmpeg", "-y", "-i", rawh, "-an", "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1",
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
+            aud = os.path.join(work, f"{name}.wav")
+            run(["ffmpeg", "-y", "-i", rawh, "-vn", "-ar", "44100", "-ac", "2", aud])
+            return seg, aud, min(duration(seg), duration(aud))
+        # per video: a unique 7s OPENER + 2-3 DIFFERENT retention lines rotated ~every minute (sounds natural, never the same words twice)
+        intro_line = str(rep.get("intro") or "").strip()
+        ids = [(hg_clip(ln, f"reporter{k}"), ln, f"reporter{k}") for k, ln in enumerate(rep_lines)]
+        id_intro = hg_clip(intro_line, "intro") if intro_line else None
+        for hg_id, ln, nm in ids:
+            try:
+                s, a, d = hg_wait(hg_id, nm)
+                loop_clips.append((s, a, d, ln))
+            except Exception as e:
+                print(f"Loop clip skipped ({nm}):", e)
+        if loop_clips:
+            reporter_seg, reporter_aud, reporter_d, _ = loop_clips[0]
+        if id_intro:
+            try:
+                intro_seg, intro_aud, intro_d = hg_wait(id_intro, "intro")
+            except Exception as e:
+                print("Intro clip skipped:", e)
+        print(f"Reporter clips ready ({len(loop_clips)} loop lines, intro {intro_d:.1f}s) at: {rep.get('setting')}")
     except Exception as e:
         print("Reporter skipped:", e)
         reporter_seg = None
@@ -1321,6 +1348,7 @@ if reporter_seg:
     # then the same clip repeats mid-video and before the ending.
     rep_at = {0}  # opens the video; then repeats about once every minute (time-based, see loop)
 last_rep = 0.0
+rep_rot = 0  # rotates through the different retention lines so each repeat says something new
 
 t0 = 0.0
 starts = []
@@ -1330,16 +1358,22 @@ for i, sc in enumerate(plan["scenes"]):
         rep_at.add(i)
     if i in rep_at:
         last_rep = t0
-        # same reporter clip again (frame + captions get burned on top later)
-        segments.append(reporter_seg); audios.append(reporter_aud)
-        rw = str(rep["line"]).split()
-        per_r = reporter_d / max(1, len(rw)); tr = t0
+        # opener = unique intro clip (if made); repeats ROTATE through the 2-3 different retention lines
+        use_intro = (i == 0 and intro_seg is not None)
+        if use_intro:
+            c_seg, c_aud, c_d, c_line = intro_seg, intro_aud, intro_d, str(rep.get("intro") or "")
+        else:
+            c_seg, c_aud, c_d, c_line = loop_clips[rep_rot % len(loop_clips)]
+            rep_rot += 1
+        segments.append(c_seg); audios.append(c_aud)
+        rw = c_line.split()
+        per_r = c_d / max(1, len(rw)); tr = t0
         for k in range(0, len(rw), 4):
             c = " ".join(rw[k:k + 4]); cd = per_r * len(c.split())
             events.append(f"Dialogue: 0,{ass_time(tr)},{ass_time(tr + cd)},Cap,,0,0,0,,{c.upper()}")
             tr += cd
         gfx_starts.append(t0)
-        t0 += reporter_d
+        t0 += c_d
     starts.append(t0)
     text = sc["text"].strip()
     a = os.path.join(work, f"a{i}.mp3"); speak(text, a)
