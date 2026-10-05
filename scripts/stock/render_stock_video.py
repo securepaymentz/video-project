@@ -1,4 +1,4 @@
-"""stock-engine v35 (installed by Studio)
+"""stock-engine v40 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -20,9 +20,8 @@ if not PEXELS and not UNSPLASH and not PIXABAY:
 
 EDGE = {"es": "es-MX-JorgeNeural", "en": "en-US-GuyNeural", "pt": "pt-BR-AntonioNeural", "fr": "fr-FR-HenriNeural"}
 EL_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
-HF_ID = os.environ.get("HIGGSFIELD_KEY_ID", "").strip()
-HF_SECRET = os.environ.get("HIGGSFIELD_KEY_SECRET", "").strip()
-HF = bool(HF_ID and HF_SECRET)
+HF_KEY = os.environ.get("HIGGSFIELD_API_KEY", "").strip()
+HF = bool(HF_KEY)
 HF_TTS = os.environ.get("HIGGSFIELD_TTS_MODEL", "").strip().strip("/") or "minimax/speech-2.8-hd"
 HF_MUSIC = os.environ.get("HIGGSFIELD_MUSIC_MODEL", "").strip().strip("/") or "elevenlabs/music"
 HF_VOICE = os.environ.get("HIGGSFIELD_VOICE_ID", "").strip()
@@ -36,7 +35,7 @@ USE_HF_AUDIO = AUDIO_PROVIDER == "higgsfield" and HF
 
 def hf_generate(model, body, path):
     """Higgsfield async API: submit, poll status, download the audio output."""
-    h = {"Authorization": f"Key {HF_ID}:{HF_SECRET}", "Content-Type": "application/json"}
+    h = {"Authorization": f"Key {HF_KEY}", "Content-Type": "application/json"}
     r = requests.post(f"https://platform.higgsfield.ai/{model}", headers=h, json=body, timeout=60)
     r.raise_for_status()
     j = r.json()
@@ -158,6 +157,28 @@ DENTAL = {"dentist", "dentists", "dental", "teeth", "tooth", "orthodontist", "br
 for _w in ("dentist", "dentists", "dental", "teeth", "tooth", "orthodontist", "braces", "hygienist", "dentistry"):
     ANCHORS[_w] = DENTAL
 MED |= DENTAL
+# US brands & chains: if the script names one, the clip MUST show that brand (its name, logo, products or stores) —
+# never a generic restaurant, construction site or street. "mcdonald's" tokenizes to "mcdonald".
+BRANDS = {
+    "mcdonald": {"mcdonald", "mcdonalds", "big mac", "mcnuggets", "golden arches", "mcflurry", "happymeal", "happy meal"},
+    "burgerking": {"burger king", "burgerking", "whopper"},
+    "wendys": {"wendys", "wendy's"}, "wendy": {"wendys", "wendy's"},
+    "tacobell": {"taco bell", "tacobell"}, "kfc": {"kfc", "kentucky fried chicken"},
+    "chickfila": {"chick fil a", "chickfila", "chick fil"}, "popeyes": {"popeyes", "popeye's"},
+    "starbucks": {"starbucks", "frappuccino"}, "dunkin": {"dunkin", "dunkin donuts"},
+    "subway": {"subway sandwich", "subway restaurant", "subway"},
+    "dominos": {"dominos", "domino's"}, "pizzahut": {"pizza hut", "pizzahut"},
+    "chipotle": {"chipotle"}, "fiveguys": {"five guys", "fiveguys"},
+    "walmart": {"walmart", "wal mart"}, "target": {"target store", "target"},
+    "costco": {"costco"}, "samsclub": {"sam's club", "sams club", "samsclub"},
+    "homedepot": {"home depot", "homedepot"}, "lowes": {"lowes", "lowe's"},
+    "amazon": {"amazon"}, "tesla": {"tesla", "cybertruck", "model y", "model 3"},
+    "ford": {"ford", "f-150", "f150", "mustang"}, "apple": {"apple", "iphone", "macbook", "ipad"},
+    "netflix": {"netflix"}, "disney": {"disney", "disneyland", "disney world"},
+    "mcdonalds": {"mcdonald", "mcdonalds", "big mac", "mcnuggets", "golden arches"},
+}
+for _b, _syn in BRANDS.items():
+    ANCHORS[_b] = _syn
 # Medical/insurance scenes never show street traffic unless the script is about ambulances.
 MED_TRIGGERS = MED | {"insurance", "hospital", "pharmacy"}
 MED_BLOCK = {"taxi", "cab", "taxicab", "traffic", "pedestrian", "pedestrians", "vehicle", "vehicles", "car", "cars", "street", "highway", "road", "money", "cash", "dollar", "dollars", "banknote", "banknotes"}
@@ -201,31 +222,51 @@ def candidate_ok(query, metadata, location=""):
     both = text + " " + place
     if any(has_word(w, both) for w in FOREIGN_WORDS):
         return False
+    # Detect a named brand FIRST, before any other gate can kill the query.
+    qtext = str(query).lower().replace("'", "").replace("-", "").replace(" ", "")
+    query_brand = next((b for b in BRANDS if b in qtext), None)
     # Every result came from a US-only search ("... USA"). Places still need an explicit US clue;
     # people/work scenes (rarely tagged "USA") pass when the result matches the work subject
     # and carries no foreign tag, so videos show real American workers instead of only dollar bills.
     if not any(has_word(w, both) for w in US_WORDS):
-        if named_places(query) or not (subject(query) & WORK) or not (extract_words(both) & WORK):
+        subj = subject(query)
+        words0 = extract_words(both)
+        strong = bool(subj & WORK and words0 & WORK) or query_brand is not None or any(t in ANCHORS and ANCHORS[t] & words0 for t in subj)
+        if named_places(query) or not strong:
             return False
     if place and not any(has_word(w, place) for w in US_WORDS):
         return False
-    # Named state/city: the clip must show that place (or a close neighbour), never another US city.
+    # Named state/city: the clip must show THAT place — never another US city, never a "neighbour".
     places = named_places(query)
-    if places:
-        ok = set(places)
-        for p in places:
-            ok |= NEAR.get(p, set())
-        if not any(has_word(w, both) for w in ok):
-            return False
+    if places and not any(has_word(w, both) for w in places):
+        return False
     words = extract_words(both)
     terms = subject(query)
     qw = extract_words(query)
     if (qw & MED_TRIGGERS) and not (qw & {"ambulance", "paramedic", "emergency"}) and (words & MED_BLOCK):
         return False
+    # Named brand (McDonald's, Walmart, Tesla...): the result must literally mention the brand or its
+    # products — a brand scene can NEVER be filled with a generic restaurant/store/construction clip.
+    qtext = str(query).lower().replace("'", "").replace("-", "").replace(" ", "")
+    brand_hit = False
+    for b, syn in BRANDS.items():
+        if b in qtext:
+            if not any(s.replace(" ", "") in both.replace("-", " ").replace(" ", "") or has_word(s, both) for s in syn):
+                return False
+            brand_hit = True
+    # A verified brand IS the subject — accept it without further word overlap.
+    if brand_hit:
+        return True
     # Exact subject: anchor nouns (dealership, hospital...) must appear themselves or as a true synonym.
     for t in terms:
         if t in ANCHORS and not (ANCHORS[t] & words):
             return False
+    # Anchor terms that passed above are satisfied — accept.
+    if any(t in ANCHORS for t in terms):
+        return True
+    # A named place was literally verified above — the place IS the scene, accept it.
+    if places:
+        return True
     if not terms:
         return True
     hit = len(terms & words)
@@ -1218,6 +1259,11 @@ def make_footage(i, q, d, seg, want_photo):
 HG_KEY = os.environ.get("HEYGEN_API_KEY", "").strip()
 HG_AVATAR = os.environ.get("HEYGEN_AVATAR_ID", "").strip()
 HG_TYPE = os.environ.get("HEYGEN_AVATAR_TYPE", "").strip().lower()
+# Wardrobe rotation: several Photo Avatars of the SAME presenter in different outfits — pick one at random per video
+HG_WARDROBE = [a.strip() for a in os.environ.get("HEYGEN_AVATAR_IDS", "").split(",") if a.strip()]
+if HG_WARDROBE:
+    HG_AVATAR = random.choice(HG_WARDROBE)
+    HG_TYPE = "talking_photo"
 if HG_AVATAR and not HG_TYPE:
     HG_TYPE = "avatar"  # a saved Avatar ID is a standard/Avatar III presenter, not a talking photo
 reporter_seg = reporter_aud = None
@@ -1280,24 +1326,16 @@ if HG_KEY and rep_lines and plan.get("reporter_on", True):
             aud = os.path.join(work, f"{name}.wav")
             run(["ffmpeg", "-y", "-i", rawh, "-vn", "-ar", "44100", "-ac", "2", aud])
             return seg, aud, min(duration(seg), duration(aud))
-        # per video: a unique 7s OPENER + 2-3 DIFFERENT retention lines rotated ~every minute (sounds natural, never the same words twice)
-        intro_line = str(rep.get("intro") or "").strip()
-        ids = [(hg_clip(ln, f"reporter{k}"), ln, f"reporter{k}") for k, ln in enumerate(rep_lines)]
+        # per video: ONE unique ~7s OPENER only (saves money — no repeated retention clips)
+        intro_line = str(rep.get("intro") or "").strip() or (rep_lines[0] if rep_lines else "")
         id_intro = hg_clip(intro_line, "intro") if intro_line else None
-        for hg_id, ln, nm in ids:
-            try:
-                s, a, d = hg_wait(hg_id, nm)
-                loop_clips.append((s, a, d, ln))
-            except Exception as e:
-                print(f"Loop clip skipped ({nm}):", e)
-        if loop_clips:
-            reporter_seg, reporter_aud, reporter_d, _ = loop_clips[0]
         if id_intro:
             try:
                 intro_seg, intro_aud, intro_d = hg_wait(id_intro, "intro")
+                reporter_seg, reporter_aud, reporter_d = intro_seg, intro_aud, intro_d
             except Exception as e:
                 print("Intro clip skipped:", e)
-        print(f"Reporter clips ready ({len(loop_clips)} loop lines, intro {intro_d:.1f}s) at: {rep.get('setting')}")
+        print(f"Reporter opener ready ({intro_d:.1f}s) at: {rep.get('setting')}")
     except Exception as e:
         print("Reporter skipped:", e)
         reporter_seg = None
@@ -1344,27 +1382,15 @@ if tk.get("url") and 0 <= tk_after < n_sc:
         tk_seg = None
 rep_at = set()
 if reporter_seg:
-    # The video OPENS with the HeyGen reporter (frame + captions + SFX on top),
-    # then the same clip repeats mid-video and before the ending.
-    rep_at = {0}  # opens the video; then repeats about once every minute (time-based, see loop)
-last_rep = 0.0
-rep_rot = 0  # rotates through the different retention lines so each repeat says something new
+    # The video OPENS with the HeyGen reporter (frame + captions + SFX on top). Opener only, no repeats.
+    rep_at = {0}
 
 t0 = 0.0
 starts = []
 gfx_starts = []
 for i, sc in enumerate(plan["scenes"]):
-    if reporter_seg and i > 0 and i < n_sc - 1 and t0 - last_rep >= 60.0:
-        rep_at.add(i)
     if i in rep_at:
-        last_rep = t0
-        # opener = unique intro clip (if made); repeats ROTATE through the 2-3 different retention lines
-        use_intro = (i == 0 and intro_seg is not None)
-        if use_intro:
-            c_seg, c_aud, c_d, c_line = intro_seg, intro_aud, intro_d, str(rep.get("intro") or "")
-        else:
-            c_seg, c_aud, c_d, c_line = loop_clips[rep_rot % len(loop_clips)]
-            rep_rot += 1
+        c_seg, c_aud, c_d, c_line = intro_seg, intro_aud, intro_d, str(rep.get("intro") or rep_lines[0] if rep_lines else "")
         segments.append(c_seg); audios.append(c_aud)
         rw = c_line.split()
         per_r = c_d / max(1, len(rw)); tr = t0
