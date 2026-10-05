@@ -1,4 +1,4 @@
-# stock-engine v57 (installed by Studio)
+# stock-engine v67 (installed by Studio)
 name: Stock Clips Video
 
 on:
@@ -84,7 +84,8 @@ jobs:
           path: |
             /tmp/brand-video/daily-video.mp4
             /tmp/brand-video/meta.json
-          retention-days: 30
+            /tmp/brand-video/thumbnail.jpg
+          retention-days: 1
 
       - name: Upload to YouTube
         id: youtube
@@ -101,6 +102,14 @@ jobs:
           python $DIR/upload_youtube.py /tmp/brand-video/daily-video.mp4 /tmp/brand-video/meta.json | tee /tmp/brand-video/upload.log
           URL=$(grep -o 'https://youtu.be/[A-Za-z0-9_-]*' /tmp/brand-video/upload.log | head -1)
           echo "video_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Attach generated thumbnail
+        if: ${{ github.event.inputs.upload == 'true' && steps.youtube.outputs.video_url != '' }}
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: python scripts/stock/upload_thumbnail.py /tmp/brand-video/upload.log /tmp/brand-video/thumbnail.jpg
 
       - name: Post to X
         if: ${{ github.event.inputs.post_x == 'true' }}
