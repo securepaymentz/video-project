@@ -1,4 +1,4 @@
-# stock-engine v67 (installed by Studio)
+# stock-engine v72 (installed by Studio)
 name: Stock Clips Video
 
 on:
@@ -76,6 +76,13 @@ jobs:
           HEYGEN_AVATAR_IDS: ${{ secrets.HEYGEN_AVATAR_IDS }}
           PREMIUM_VOICE: ${{ github.event.inputs.premium_voice }}
         run: python scripts/stock/render_stock_video.py /tmp/brand-video/daily-video.mp4
+
+      - name: Save the plain MP4 (no zip, so browsers don't block it)
+        uses: actions/upload-artifact@v7
+        with:
+          path: /tmp/brand-video/daily-video.mp4
+          archive: false
+          retention-days: 1
 
       - name: Save the video as a download
         uses: actions/upload-artifact@v4
