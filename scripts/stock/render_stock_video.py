@@ -1,4 +1,4 @@
-"""stock-engine v40 (installed by Studio)
+"""stock-engine v41 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -201,6 +201,44 @@ def extract_words(s):
     return set(re.findall(r"[a-z0-9]+", str(s).lower()))
 
 
+def stem(w):
+    """eggs->egg, prices->price, boxes->box, groceries->grocery — so a tag 'egg' matches the word 'eggs'."""
+    if len(w) > 4 and w.endswith("ies"): return w[:-3] + "y"
+    if len(w) > 4 and w.endswith(("ches", "shes", "xes", "sses")): return w[:-2]
+    if len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")): return w[:-1]
+    return w
+
+
+def stems(s):
+    return {stem(w) for w in extract_words(s)}
+
+
+# Words too vague to prove a scene (a "line" or "building" can be anything) — never used as the must-see subject.
+WEAK = {"building", "buildings", "line", "people", "person", "man", "woman", "men", "women", "room", "area", "street", "city", "scene",
+        "place", "thing", "things", "background", "life", "day", "time", "price", "prices", "cost", "costs", "rising", "high", "new",
+        "old", "big", "small", "american", "americans", "usa", "us", "america", "united", "states", "exterior", "interior", "closeup"}
+# The ONE concrete thing the current scene must visibly show (set per scene from the plan's "subject").
+SCENE_MUST = set()
+SCENE_SUBJECT = ""
+
+
+def set_scene_subject(subj):
+    global SCENE_MUST, SCENE_SUBJECT
+    SCENE_SUBJECT = str(subj or "").strip().lower()[:40]
+    SCENE_MUST = {stem(w) for w in extract_words(SCENE_SUBJECT) if w not in WEAK and w not in STOP and len(w) > 2}
+    for p in named_places(SCENE_SUBJECT):  # places are verified by the place rule
+        SCENE_MUST -= {stem(w) for w in p.split()}
+
+
+def must_ok(text):
+    """True when the result's tags/description mention the scene's subject (any of its specific words, plural-safe)."""
+    if not SCENE_MUST:
+        return True
+    st = stems(text)
+    flat = re.sub(r"[^a-z0-9]", "", text.lower())
+    return bool(SCENE_MUST & st) or any(len(m) > 4 and m in flat for m in SCENE_MUST)
+
+
 def subject(q):
     place_words = set()
     for p in named_places(q):
@@ -213,7 +251,12 @@ def search_terms(q):
     if not q or not subject(q):
         return []
     has_us = any(has_word(w, q.lower()) for w in US_WORDS)
-    return [q] if has_us else [q + " USA", q + " United States"]
+    if has_us:
+        return [q]
+    out = [q + " USA", q + " United States"]
+    if SCENE_MUST and not named_places(q):
+        out.append(q)  # still filtered: foreign tags rejected, subject must be shown
+    return out
 
 
 def candidate_ok(query, metadata, location=""):
@@ -222,6 +265,11 @@ def candidate_ok(query, metadata, location=""):
     both = text + " " + place
     if any(has_word(w, both) for w in FOREIGN_WORDS):
         return False
+    # UNIVERSAL SUBJECT RULE: whatever the sentence talks about (eggs, beef, dentist, McDonald's, tires...)
+    # must be in the result — otherwise it is rejected, no matter how "close" it looks.
+    if not must_ok(both):
+        return False
+    subject_hit = bool(SCENE_MUST)
     # Detect a named brand FIRST, before any other gate can kill the query.
     qtext = str(query).lower().replace("'", "").replace("-", "").replace(" ", "")
     query_brand = next((b for b in BRANDS if b in qtext), None)
@@ -231,7 +279,7 @@ def candidate_ok(query, metadata, location=""):
     if not any(has_word(w, both) for w in US_WORDS):
         subj = subject(query)
         words0 = extract_words(both)
-        strong = bool(subj & WORK and words0 & WORK) or query_brand is not None or any(t in ANCHORS and ANCHORS[t] & words0 for t in subj)
+        strong = subject_hit or bool(subj & WORK and words0 & WORK) or query_brand is not None or any(t in ANCHORS and ANCHORS[t] & words0 for t in subj)
         if named_places(query) or not strong:
             return False
     if place and not any(has_word(w, place) for w in US_WORDS):
@@ -258,7 +306,10 @@ def candidate_ok(query, metadata, location=""):
     if brand_hit:
         return True
     # Exact subject: anchor nouns (dealership, hospital...) must appear themselves or as a true synonym.
-    for t in terms:
+    # When the scene subject was verified, only anchors inside the subject itself can veto
+    # (extra helper words like "grocery" in "eggs carton grocery" must not reject a real eggs clip).
+    anchor_terms = (extract_words(SCENE_SUBJECT) - STOP) if subject_hit else terms
+    for t in anchor_terms:
         if t in ANCHORS and not (ANCHORS[t] & words):
             return False
     # Anchor terms that passed above are satisfied — accept.
@@ -267,9 +318,9 @@ def candidate_ok(query, metadata, location=""):
     # A named place was literally verified above — the place IS the scene, accept it.
     if places:
         return True
-    if not terms:
+    if not terms or subject_hit:
         return True
-    hit = len(terms & words)
+    hit = len({stem(t) for t in terms} & {stem(w) for w in words})
     # Multi-word subjects need at least two matching words, so "car" alone can't stand in for "car dealership".
     return hit >= min(2, len(terms))
 
@@ -301,7 +352,7 @@ def clip_rank(query, items, thumb):
         import io, torch
         from PIL import Image
         model, proc = m
-        subj = " ".join(sorted(subject(query))) or query
+        subj = SCENE_SUBJECT or " ".join(sorted(subject(query))) or query
         prompts = [f"a photo of {query}", f"a photo of {subj}"] + [f"a photo of {n}" for n in NEG if not (extract_words(n) & subject(query))]
         imgs, keep = [], []
         for it in items[:10]:
@@ -1406,6 +1457,7 @@ for i, sc in enumerate(plan["scenes"]):
     d = duration(a) + 0.25
     seg = os.path.join(work, f"s{i}.mp4")
     q = sc.get("query", plan.get("fallback_query", "city"))
+    set_scene_subject(sc.get("subject") or "")
     vis = sc.get("visual") if i >= 3 else None  # the video ALWAYS opens on real footage
     done = False
     if vis:
@@ -1428,7 +1480,14 @@ for i, sc in enumerate(plan["scenes"]):
                 done = True
     if not done:
         done = make_footage(i, q, d, seg, UNSPLASH and i >= 3 and i % 3 == 2)
+    if not done and SCENE_SUBJECT and SCENE_SUBJECT != q.lower():
+        # Same subject, simpler search (e.g. just "eggs") — clip first, then a photo with slow motion.
+        try:
+            done = make_footage(i, SCENE_SUBJECT, d, seg, False)
+        except Exception as e:
+            print("Subject fallback skipped:", e)
     if not done:
+        set_scene_subject("")  # place fallback: the place itself is the subject
         # Named place with no exact match: show that same place (skyline, streets, homes), never another subject.
         for pl in sorted(named_places(q + " " + text)):
             for v in ("skyline", "city", "downtown", "homes", "night"):
