@@ -1,13 +1,17 @@
-# stock-engine v56 (installed by Studio)
+# stock-engine v57 (installed by Studio)
 name: Stock Clips Video
 
 on:
   workflow_dispatch:
     inputs:
       plan:
-        description: "Base64 JSON plan written by Studio (title, scenes, voice)"
+        description: "Base64 JSON plan written by Studio (small plans only)"
         type: string
-        required: true
+        required: false
+      plan_file:
+        description: "Repo path of the JSON plan committed by Studio"
+        type: string
+        required: false
       premium_voice:
         description: "Use ElevenLabs voice (off = free voice)"
         type: boolean
@@ -55,6 +59,7 @@ jobs:
       - name: Build the video
         env:
           PLAN: ${{ github.event.inputs.plan }}
+          PLAN_FILE: ${{ github.event.inputs.plan_file }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
