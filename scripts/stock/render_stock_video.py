@@ -1,4 +1,4 @@
-"""stock-engine v41 (installed by Studio)
+"""stock-engine v48 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -259,10 +259,29 @@ def search_terms(q):
     return out
 
 
+CARTOON_BAD = ["anime", "animation", "animated", "cartoon", "toon", "manga", "illustration", "illustrated",
+               "3d render", "3d animation", "cgi", "vector", "drawing", "clipart", "clip art", "digital art",
+               "ai generated", "render", "figurine", "doll", "plush", "mascot", "character design", "pixar"]
+
+# Absolute bans: adult/sexual content and confusing close-ups of bodies — never allowed in any scene.
+NSFW_BAD = ["nude", "naked", "nudity", "nsfw", "sexy", "lingerie", "bikini", "underwear", "topless", "erotic",
+            "sensual", "breast", "buttocks", "porn", "fetish", "strip", "seductive", "intimate"]
+# People words: used to reject people shots when the scene is about an OBJECT (cars, eggs, prices...).
+PEOPLE_WORDS = {"people", "person", "man", "woman", "men", "women", "boy", "girl", "child", "children", "kid",
+                "kids", "baby", "couple", "crowd", "pedestrian", "pedestrians", "face", "portrait", "hands",
+                "hand", "family", "model", "tourist", "tourists", "shopper", "shoppers", "customer", "customers"}
+
+
 def candidate_ok(query, metadata, location=""):
     text = str(metadata or "").lower().replace("-", " ")
     place = str(location or "").lower()
     both = text + " " + place
+    # REAL FOOTAGE ONLY: never cartoons, anime, illustrations, 3D renders or AI-looking art.
+    if any(w in both for w in CARTOON_BAD):
+        return False
+    # Never any adult/sexual content, whatever the scene.
+    if any(w in both for w in NSFW_BAD):
+        return False
     if any(has_word(w, both) for w in FOREIGN_WORDS):
         return False
     # UNIVERSAL SUBJECT RULE: whatever the sentence talks about (eggs, beef, dentist, McDonald's, tires...)
@@ -270,6 +289,15 @@ def candidate_ok(query, metadata, location=""):
     if not must_ok(both):
         return False
     subject_hit = bool(SCENE_MUST)
+    # OBJECT RULE: when the scene is about a thing (cars, eggs, houses, phones...) and NOT about
+    # people at work, reject clips whose tags are about people — "cars" must show only cars.
+    if subject_hit and not (SCENE_MUST & {stem(w) for w in WORK}) and not (SCENE_MUST & stems("people person crowd family")):
+        if extract_words(both) & PEOPLE_WORDS and not (extract_words(both) & set(SCENE_MUST)):
+            return False
+        # Even if the object is tagged, a clip dominated by people tags is confusing — reject it.
+        people_hits = len(extract_words(both) & PEOPLE_WORDS)
+        if people_hits >= 2:
+            return False
     # Detect a named brand FIRST, before any other gate can kill the query.
     qtext = str(query).lower().replace("'", "").replace("-", "").replace(" ", "")
     query_brand = next((b for b in BRANDS if b in qtext), None)
@@ -340,7 +368,7 @@ def clip_model():
     return _clip
 
 
-NEG = ["a camera", "a smartphone screen", "text on a page", "an abstract background", "a logo", "a cartoon illustration", "an empty sky"]
+NEG = ["a camera", "a smartphone screen", "text on a page", "an abstract background", "a logo", "a cartoon illustration", "an anime drawing", "a 3d cartoon render", "an empty sky", "a person posing for the camera", "a crowd of people", "nudity or sexual content"]
 
 
 def clip_rank(query, items, thumb):
@@ -353,7 +381,8 @@ def clip_rank(query, items, thumb):
         from PIL import Image
         model, proc = m
         subj = SCENE_SUBJECT or " ".join(sorted(subject(query))) or query
-        prompts = [f"a photo of {query}", f"a photo of {subj}"] + [f"a photo of {n}" for n in NEG if not (extract_words(n) & subject(query))]
+        prompts = [f"a real photograph of {query}", f"a real photograph of {subj}",
+                   f"a cartoon, anime or 3d render of {subj}"] + [f"a photo of {n}" for n in NEG if not (extract_words(n) & subject(query))]
         imgs, keep = [], []
         for it in items[:10]:
             try:
@@ -371,6 +400,9 @@ def clip_rank(query, items, thumb):
         scored = []
         for k, it in enumerate(keep):
             on = float(probs[k][0] + probs[k][1]); sim = float(max(sims[k][0], sims[k][1]))
+            cartoon = float(probs[k][2])
+            if cartoon > max(float(probs[k][0]), float(probs[k][1])) * 0.8:
+                print(f"Visual AI rejected a cartoon/illustration for '{query}'"); continue
             if on >= 0.5 and sim >= 0.22:
                 scored.append((-(sim + 0.05 * on), it))
             else:
@@ -1306,94 +1338,57 @@ def make_footage(i, q, d, seg, want_photo):
     return False
 
 
-# ---- HeyGen reporter (Avatar III): ONE clip per video, filmed "on location" for this topic, repeated a few times ----
-HG_KEY = os.environ.get("HEYGEN_API_KEY", "").strip()
-HG_AVATAR = os.environ.get("HEYGEN_AVATAR_ID", "").strip()
-HG_TYPE = os.environ.get("HEYGEN_AVATAR_TYPE", "").strip().lower()
-# Wardrobe rotation: several Photo Avatars of the SAME presenter in different outfits — pick one at random per video
-HG_WARDROBE = [a.strip() for a in os.environ.get("HEYGEN_AVATAR_IDS", "").split(",") if a.strip()]
-if HG_WARDROBE:
-    HG_AVATAR = random.choice(HG_WARDROBE)
-    HG_TYPE = "talking_photo"
-if HG_AVATAR and not HG_TYPE:
-    HG_TYPE = "avatar"  # a saved Avatar ID is a standard/Avatar III presenter, not a talking photo
+# ---- Lovable AI opener: ONE unique 5s cinematic clip of the EXACT topic, generated per video ----
+LV_KEY = os.environ.get("LOVABLE_API_KEY", "").strip()
 reporter_seg = reporter_aud = None
 reporter_d = 0.0
 intro_seg = intro_aud = None
 intro_d = 0.0
-loop_clips = []  # [(seg, aud, dur, line), ...] — 2-3 DIFFERENT retention lines, rotated so repeats never sound identical
-rep = plan.get("reporter") or {}
-rep_lines = [str(x).strip()[:240] for x in (rep.get("lines") or []) if str(x).strip()][:3]
-if rep.get("line") and str(rep["line"]).strip() not in rep_lines:
-    rep_lines.insert(0, str(rep["line"]).strip()[:240])
-if not rep_lines and rep.get("line"):
-    rep_lines = [str(rep["line"]).strip()[:240]]
-if HG_KEY and rep_lines and plan.get("reporter_on", True):
+opener_prompt = str(plan.get("opener_prompt") or "").strip()
+if LV_KEY and opener_prompt and plan.get("reporter_on", True):
     try:
-        hh = {"X-Api-Key": HG_KEY, "Content-Type": "application/json"}
-        vid = os.environ.get("HEYGEN_VOICE_ID", "").strip()
-        if not vid:
-            want = "female" if plan.get("voice_gender") == "female" else "male"
-            vs = requests.get("https://api.heygen.com/v2/voices", headers=hh, timeout=60).json().get("data", {}).get("voices", [])
-            en = [v for v in vs if str(v.get("language", "")).lower().startswith("english")]
-            pick = [v for v in en if str(v.get("gender", "")).lower() == want] or en or vs
-            vid = pick[0]["voice_id"]
-        if not HG_AVATAR:
-            # no Avatar ID saved: rotate through HeyGen's stock Avatar III presenters of the narrator's gender
-            want_g = "female" if plan.get("voice_gender") == "female" else "male"
-            av = requests.get("https://api.heygen.com/v2/avatars", headers=hh, timeout=60).json().get("data", {}).get("avatars", [])
-            av = [a for a in av if not a.get("premium")] or av
-            pool = [a for a in av if str(a.get("gender", "")).lower() == want_g] or av
-            # look like the sample reporter: upper-body presenter in a blazer / suit / jacket
-            sharp = [a for a in pool if any(w in str(a.get("avatar_name", "")).lower() for w in ("blazer", "suit", "jacket", "business", "formal"))]
-            HG_AVATAR = random.choice((sharp or pool)[:40])["avatar_id"]; HG_TYPE = "avatar"
-        bg_url, _a = find_photo(str(rep.get("setting") or plan.get("fallback_query", "american office")))
-        char = {"type": "talking_photo", "talking_photo_id": HG_AVATAR} if "photo" in HG_TYPE else {"type": "avatar", "avatar_id": HG_AVATAR, "avatar_style": "normal"}
-        dim = {"width": 720, "height": 1280} if vertical else {"width": 1280, "height": 720}
         import time
-        def hg_clip(line, name):
-            vin = {"character": char, "voice": {"type": "text", "input_text": str(line)[:240], "voice_id": vid}}
-            if bg_url:
-                vin["background"] = {"type": "image", "url": bg_url}
-            r = requests.post("https://api.heygen.com/v2/video/generate", headers=hh, json={"video_inputs": [vin], "dimension": dim}, timeout=60)
-            r.raise_for_status()
-            return r.json()["data"]["video_id"]
-        def hg_wait(hg_id, name):
-            hg_url = None
-            for _ in range(120):  # up to ~20 min
-                time.sleep(10)
-                st = requests.get(f"https://api.heygen.com/v1/video_status.get?video_id={hg_id}", headers=hh, timeout=60).json().get("data", {})
-                if st.get("status") == "completed":
-                    hg_url = st.get("video_url"); break
-                if st.get("status") == "failed":
-                    raise RuntimeError(f"HeyGen failed: {st.get('error')}")
-            if not hg_url:
-                raise RuntimeError("HeyGen took too long")
-            rawh = os.path.join(work, f"{name}_raw.mp4")
-            open(rawh, "wb").write(requests.get(hg_url, timeout=180).content)
-            seg = os.path.join(work, f"{name}.mp4")
-            run(["ffmpeg", "-y", "-i", rawh, "-an", "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1",
-                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
-            aud = os.path.join(work, f"{name}.wav")
-            run(["ffmpeg", "-y", "-i", rawh, "-vn", "-ar", "44100", "-ac", "2", aud])
-            return seg, aud, min(duration(seg), duration(aud))
-        # per video: ONE unique ~7s OPENER only (saves money — no repeated retention clips)
-        intro_line = str(rep.get("intro") or "").strip() or (rep_lines[0] if rep_lines else "")
-        id_intro = hg_clip(intro_line, "intro") if intro_line else None
-        if id_intro:
-            try:
-                intro_seg, intro_aud, intro_d = hg_wait(id_intro, "intro")
-                reporter_seg, reporter_aud, reporter_d = intro_seg, intro_aud, intro_d
-            except Exception as e:
-                print("Intro clip skipped:", e)
-        print(f"Reporter opener ready ({intro_d:.1f}s) at: {rep.get('setting')}")
+        lh = {"Authorization": f"Bearer {LV_KEY}", "Content-Type": "application/json"}
+        body = {
+            "model": "google/gemini-omni-1.1-flash",
+            "input": opener_prompt + " Photorealistic cinematic opening shot in the United States, in a single continuous shot, no scene cuts, no on-screen text, no dialogue, no people posing for the camera, soft ambient sound only.",
+            "response_format": {"type": "video", "resolution": "1080p", "duration": "5s", "aspect_ratio": "9:16" if vertical else "16:9"},
+        }
+        r = requests.post("https://ai.gateway.lovable.dev/v1/videos", headers=lh, json=body, timeout=120)
+        r.raise_for_status()
+        lv_id = r.json()["id"]
+        dl = None
+        for _ in range(60):  # up to ~8 min
+            time.sleep(8)
+            st = requests.get(f"https://ai.gateway.lovable.dev/v1/videos/{lv_id}", headers=lh, timeout=60).json()
+            if st.get("status") == "completed":
+                dl = requests.get(f"https://ai.gateway.lovable.dev/v1/videos/{lv_id}/content", headers=lh, timeout=300).content
+                break
+            if st.get("status") == "failed":
+                raise RuntimeError(f"Opener generation failed: {st.get('error')}")
+        if not dl:
+            raise RuntimeError("Opener took too long")
+        rawo = os.path.join(work, "opener_raw.mp4")
+        open(rawo, "wb").write(dl)
+        seg = os.path.join(work, "opener.mp4")
+        run(["ffmpeg", "-y", "-i", rawo, "-an", "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
+        aud = os.path.join(work, "opener.wav")
+        try:
+            run(["ffmpeg", "-y", "-i", rawo, "-vn", "-ar", "44100", "-ac", "2", aud])
+        except Exception:
+            run(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "5", aud])
+        intro_seg, intro_aud = seg, aud
+        intro_d = min(duration(seg), duration(aud))
+        reporter_seg, reporter_aud, reporter_d = intro_seg, intro_aud, intro_d
+        print(f"Lovable opener ready ({intro_d:.1f}s)")
     except Exception as e:
-        print("Reporter skipped:", e)
+        print("Opener skipped:", e)
         reporter_seg = None
 
 n_sc = len(plan["scenes"])
 
-# ---- Real TikTok reaction (user-picked library): downloaded with yt-dlp, ~9s, composited over blurred footage ----
+# ---- Real TikTok reaction (user-picked library): downloaded with yt-dlp, up to ~30s, composited over blurred footage ----
 tk = plan.get("tiktok") or {}
 tk_seg = tk_aud = None
 tk_d = 0.0
@@ -1402,7 +1397,7 @@ if tk.get("url") and 0 <= tk_after < n_sc:
     try:
         rawt = os.path.join(work, "tiktok_raw.mp4")
         run(["yt-dlp", "-q", "--no-playlist", "-f", "best[ext=mp4]/best", "-o", rawt, str(tk["url"])])
-        tk_d = max(4.0, min(9.0, duration(rawt) - 0.6))
+        tk_d = max(4.0, min(30.0, duration(rawt) - 0.6))
         bgt = os.path.join(work, "tiktok_bg.mp4")
         sc_t = plan["scenes"][tk_after]
         have_bg = False
@@ -1433,7 +1428,7 @@ if tk.get("url") and 0 <= tk_after < n_sc:
         tk_seg = None
 rep_at = set()
 if reporter_seg:
-    # The video OPENS with the HeyGen reporter (frame + captions + SFX on top). Opener only, no repeats.
+    # The video OPENS with the Lovable AI cinematic opener (frame + SFX on top, no captions — no spoken line).
     rep_at = {0}
 
 t0 = 0.0
@@ -1441,16 +1436,9 @@ starts = []
 gfx_starts = []
 for i, sc in enumerate(plan["scenes"]):
     if i in rep_at:
-        c_seg, c_aud, c_d, c_line = intro_seg, intro_aud, intro_d, str(rep.get("intro") or rep_lines[0] if rep_lines else "")
-        segments.append(c_seg); audios.append(c_aud)
-        rw = c_line.split()
-        per_r = c_d / max(1, len(rw)); tr = t0
-        for k in range(0, len(rw), 4):
-            c = " ".join(rw[k:k + 4]); cd = per_r * len(c.split())
-            events.append(f"Dialogue: 0,{ass_time(tr)},{ass_time(tr + cd)},Cap,,0,0,0,,{c.upper()}")
-            tr += cd
+        segments.append(intro_seg); audios.append(intro_aud)
         gfx_starts.append(t0)
-        t0 += c_d
+        t0 += intro_d
     starts.append(t0)
     text = sc["text"].strip()
     a = os.path.join(work, f"a{i}.mp3"); speak(text, a)
