@@ -1,4 +1,4 @@
-"""stock-engine v32 (installed by Studio)
+"""stock-engine v33 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1239,7 +1239,9 @@ if HG_KEY and rep.get("line") and plan.get("reporter_on", True):
             av = requests.get("https://api.heygen.com/v2/avatars", headers=hh, timeout=60).json().get("data", {}).get("avatars", [])
             av = [a for a in av if not a.get("premium")] or av
             pool = [a for a in av if str(a.get("gender", "")).lower() == want_g] or av
-            HG_AVATAR = random.choice(pool[:40])["avatar_id"]; HG_TYPE = "avatar"
+            # look like the sample reporter: upper-body presenter in a blazer / suit / jacket
+            sharp = [a for a in pool if any(w in str(a.get("avatar_name", "")).lower() for w in ("blazer", "suit", "jacket", "business", "formal"))]
+            HG_AVATAR = random.choice((sharp or pool)[:40])["avatar_id"]; HG_TYPE = "avatar"
         bg_url, _a = find_photo(str(rep.get("setting") or plan.get("fallback_query", "american office")))
         char = {"type": "talking_photo", "talking_photo_id": HG_AVATAR} if "photo" in HG_TYPE else {"type": "avatar", "avatar_id": HG_AVATAR, "avatar_style": "normal"}
         vin = {"character": char, "voice": {"type": "text", "input_text": str(rep["line"])[:220], "voice_id": vid}}
@@ -1317,14 +1319,17 @@ rep_at = set()
 if reporter_seg:
     # The video OPENS with the HeyGen reporter (frame + captions + SFX on top),
     # then the same clip repeats mid-video and before the ending.
-    rep_at = {0, n_sc - 1} if n_sc < 12 else {0, n_sc // 2, n_sc - 1}
-    rep_at = {k for k in rep_at if 0 <= k < n_sc}
+    rep_at = {0}  # opens the video; then repeats about once every minute (time-based, see loop)
+last_rep = 0.0
 
 t0 = 0.0
 starts = []
 gfx_starts = []
 for i, sc in enumerate(plan["scenes"]):
+    if reporter_seg and i > 0 and i < n_sc - 1 and t0 - last_rep >= 60.0:
+        rep_at.add(i)
     if i in rep_at:
+        last_rep = t0
         # same reporter clip again (frame + captions get burned on top later)
         segments.append(reporter_seg); audios.append(reporter_aud)
         rw = str(rep["line"]).split()
