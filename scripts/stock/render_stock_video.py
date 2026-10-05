@@ -1,4 +1,4 @@
-"""stock-engine v57 (installed by Studio)
+"""stock-engine v67 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1353,7 +1353,9 @@ def make_footage(i, q, d, seg, want_photo):
     vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1"
     link, author = (None, None) if want_photo else find_clip(q, d)
     if not link and i < 3:
-        for alt in (plan.get("fallback_query", ""),):
+        # The opening must be real motion: try every simpler wording for a VIDEO
+        # before ever considering a still photo for the first scenes.
+        for alt in (plan.get("fallback_query", ""), SCENE_SUBJECT, plan.get("title", "")):
             if alt and not link:
                 link, author = find_clip(alt, d)
     if link:
@@ -1557,6 +1559,7 @@ if reporter_seg:
     rep_at = {0}
 
 t0 = 0.0
+card_spans = []
 starts = []
 gfx_starts = []
 for i, sc in enumerate(plan["scenes"]):
@@ -1568,6 +1571,11 @@ for i, sc in enumerate(plan["scenes"]):
     text = sc["text"].strip()
     a = os.path.join(work, f"a{i}.mp3"); speak(text, a)
     d = duration(a) + 0.25
+    if sc.get("presentationOnly"):
+        # Presentations must stay on screen long enough to read and understand:
+        # a full 30 seconds, and longer if the narration itself runs past 30s
+        # (never cut the voice short).
+        d = max(30.0, d)
     seg = os.path.join(work, f"s{i}.mp4")
     q = sc.get("query", plan.get("fallback_query", "city"))
     set_scene_subject(sc.get("subject") or "")
@@ -1635,6 +1643,7 @@ for i, sc in enumerate(plan["scenes"]):
         cd = per * len(c.split())
         events.append(f"Dialogue: 0,{ass_time(t)},{ass_time(t + cd)},Cap,,0,0,0,,{c.upper()}")
         t += cd
+    card_spans.append((i, t0, d, bool(vis) or presentation_only))
     t0 += d
     if tk_seg and i == tk_after:
         # Real TikTok reaction: vertical clip centered over the dimmed, blurred footage of this scene, original audio.
@@ -1794,21 +1803,261 @@ if frame != "none" and os.path.exists(ov) and len(fcolor) == 6:
                 px[xx, yy] = (int(nr * 255), int(ng * 255), int(nb * 255), a)
     ov = os.path.join(work, "frame_colored.png")
     im.save(ov)
+def gen_ai_image(prompt, size):
+    # Owner's own OpenAI (ChatGPT API) key first: billed to their OpenAI account, cheapest mini model.
+    if OPENAI:
+        try:
+            ro = requests.post("https://api.openai.com/v1/images/generations",
+                               headers={"Authorization": f"Bearer {OPENAI}", "Content-Type": "application/json"},
+                               json={"model": IMG_MODEL, "prompt": prompt, "size": size, "quality": "low", "n": 1}, timeout=300)
+            ro.raise_for_status()
+            import io
+            return Image.open(io.BytesIO(base64.b64decode(ro.json()["data"][0]["b64_json"]))).convert("RGB")
+        except Exception as e:
+            print("OpenAI key image failed, using Lovable AI:", str(e)[:200])
+    key = os.environ.get("LOVABLE_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("AI image key is missing")
+    url = "https://ai.gateway.lovable.dev/v1/images/generations"
+    body = {"model": "openai/gpt-image-2.5-sunburst", "prompt": prompt, "size": size, "quality": "low", "stream": True, "partial_images": 1}
+    headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
+    r = requests.post(url, headers=headers, json=body, stream=True)
+    if not r.ok:
+        raise RuntimeError("AI image failed (" + str(r.status_code) + "): " + r.text[:300])
+    saw, image = False, None
+    try:
+        for line in r.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data:"): continue
+            try: ev = json.loads(line[5:].strip())
+            except (ValueError, TypeError): continue
+            if not isinstance(ev, dict): continue
+            k = ev.get("type", "")
+            if k == "error":
+                raise RuntimeError("AI image failed: " + str((ev.get("error") or {}).get("message")))
+            if k in ("image_generation.partial_image", "image_generation.completed"):
+                saw = True
+                if k == "image_generation.completed": image = ev.get("b64_json")
+    finally:
+        r.close()
+    if not saw:
+        body2 = {k: v for k, v in body.items() if k not in ("stream", "partial_images")}
+        r2 = requests.post(url, headers=headers, json=body2)
+        if not r2.ok: raise RuntimeError("AI image failed (" + str(r2.status_code) + ")")
+        image = (r2.json().get("data") or [{}])[0].get("b64_json")
+    if not image:
+        raise RuntimeError("AI image stream ended without an image")
+    import io
+    return Image.open(io.BytesIO(base64.b64decode(image))).convert("RGB")
+
+# Overlays written straight onto the footage (no white card):
+#  - AI pictures (switch on): up to 20 photoreal 1K pictures spread across the video, shown full screen for
+#    10s each with the headline and the scene's key number written on the image. With the owner's OpenAI key
+#    (mini, low quality) all 20 cost ~$0.12; without it Lovable AI is used (~2-3 cents each).
+#  - Data callouts (free): numbers from the narration ($, %, big figures) written big over the footage for 6s.
+card_inputs, card_filters = [], []
+import re as _re
+from PIL import ImageOps, ImageFilter
+NUM_RE = _re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:million|billion|trillion|k|K))?|\b\d+(?:\.\d+)?\s?(?:%|percent)|\b\d{1,3}(?:,\d{3})+\b")
+def key_number(text):
+    m = NUM_RE.search(str(text or ""))
+    return m.group(0).replace("percent", "%").replace(" %", "%").strip() if m else ""
+def fit_font(dr, txt, size, maxw):
+    f = ImageFont.truetype(FB, size)
+    while size > 16 and dr.textlength(txt, font=f) > maxw:
+        size -= 2; f = ImageFont.truetype(FB, size)
+    return f, size
+def write_text(im, head, num):
+    dr = ImageDraw.Draw(im); w, h = im.size; m = int(w * 0.05)
+    y = h - m
+    if head:
+        f, fs = fit_font(dr, head, int(h * 0.075), w - 2 * m); y -= fs
+        dr.text((m, y), head, font=f, fill=(255, 255, 255, 255), stroke_width=max(2, fs // 14), stroke_fill=(0, 0, 0, 230))
+    if num:
+        f, fs = fit_font(dr, num, int(h * 0.16), w - 2 * m); y -= fs + int(h * 0.02)
+        dr.text((m, y), num, font=f, fill=(255, 196, 0, 255), stroke_width=max(3, fs // 14), stroke_fill=(0, 0, 0, 230))
+def free_slot(s0, s1):
+    return all(s1 + 0.3 < a or s0 > b + 0.3 for a, b, _k in card_filters)
+if plan.get("ai_cards"):
+    pool = [c for c in card_spans if c[0] >= 2 and not c[3] and c[2] >= 3.5]
+    # Only as many pictures as the video needs: about 1 per 30s, never more than 20.
+    # A 45s short gets 1-2; a 10min video gets up to 20.
+    MAX_AI_CARDS = max(1, min(20, int((t0 - 5) // 30)))
+    # Evenly spread the pictures across the whole video; scenes with a key number are preferred.
+    def _spread(lst, k):
+        if k <= 0 or not lst: return []
+        if len(lst) <= k: return list(lst)
+        step = len(lst) / k
+        return [lst[min(len(lst) - 1, int(j * step))] for j in range(k)]
+    pool.sort(key=lambda c: c[0])
+    with_num = [c for c in pool if key_number(plan["scenes"][c[0]].get("text"))]
+    without_num = [c for c in pool if not key_number(plan["scenes"][c[0]].get("text"))]
+    n_num = min(len(with_num), MAX_AI_CARDS)
+    picks = _spread(with_num, n_num) + _spread(without_num, MAX_AI_CARDS - n_num)
+    picks = sorted(picks, key=lambda c: c[0])[:MAX_AI_CARDS]
+    for n, (i, st, d, _g) in enumerate(picks):
+        s0 = st + 0.5; s1 = min(s0 + 10.0, t0 - 0.5)
+        if s1 - s0 < 4 or not free_slot(s0, s1): continue  # checked BEFORE paying for the picture
+        sc = plan["scenes"][i]
+        subject = str(sc.get("subject") or sc.get("query") or "").strip()
+        try:
+            img = gen_ai_image("Photorealistic cinematic editorial photo, real lighting, 35mm, United States setting, wide composition "
+                               "with calm darker space in the lower-left for a headline. Show literally and only: " + subject +
+                               ". Context sentence: " + str(sc.get("text", ""))[:220] +
+                               ". No text, letters, numbers, signs, logos, cartoons, CGI, nudity or insects. "
+                               "If the subject is an object, show only the object with no people.", "1536x1024")
+        except Exception as e:
+            print("AI picture skipped:", e); continue
+        img = ImageOps.fit(img, (W, H), method=Image.Resampling.LANCZOS).convert("RGBA")
+        shade = Image.new("RGBA", (W, H), (0, 0, 0, 0)); sd = ImageDraw.Draw(shade)
+        for yy in range(H // 2, H):
+            sd.line([(0, yy), (W, yy)], fill=(0, 0, 0, int(170 * (yy - H / 2) / (H / 2))))
+        img = Image.alpha_composite(img, shade)
+        write_text(img, " ".join(subject.upper().split()[:5]), key_number(sc.get("text")))
+        cp = os.path.join(work, f"aicard{n}.png"); img.save(cp)
+        card_inputs.append(cp); card_filters.append((s0, s1, "full"))
+    print("AI pictures:", len(card_inputs))
+data_n = 0
+if plan.get("data_callouts", True):
+    last_end = -99.0
+    for (i, st, d, g) in card_spans:
+        if i < 1 or g or d < 3: continue
+        sc = plan["scenes"][i]; num = key_number(sc.get("text"))
+        if not num: continue
+        s0 = st + 0.4; s1 = min(st + d - 0.2, s0 + 6.0)
+        if s1 - s0 < 2.5 or s0 < last_end + 8 or not free_slot(s0, s1): continue
+        im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        dr = ImageDraw.Draw(im); m = int(W * 0.05)
+        f, fs = fit_font(dr, num, int(H * 0.14), W // 2)
+        dr.text((m, int(H * 0.12)), num, font=f, fill=(255, 196, 0, 255), stroke_width=max(3, fs // 12), stroke_fill=(0, 0, 0, 235))
+        lab = " ".join(str(sc.get("subject") or sc.get("query") or "").upper().split()[:5])
+        if lab:
+            f2, fs2 = fit_font(dr, lab, int(H * 0.05), W // 2)
+            dr.text((m, int(H * 0.12) + fs + int(H * 0.02)), lab, font=f2, fill=(255, 255, 255, 255), stroke_width=max(2, fs2 // 12), stroke_fill=(0, 0, 0, 235))
+        cp = os.path.join(work, f"data{data_n}.png"); im.save(cp); data_n += 1
+        card_inputs.append(cp); card_filters.append((s0, s1, "text")); last_end = s1
+    print("Data callouts:", data_n)
+
+def card_chain(src, first_idx):
+    # full-screen AI pictures fade in/out; data callouts fade over the footage
+    chain, cur = [], src
+    for k, (s0, s1, kind) in enumerate(card_filters):
+        nxt = f"c{k}"
+        chain.append(f"[{first_idx + k}:v]format=rgba,fade=t=in:st={s0:.2f}:d=0.4:alpha=1,fade=t=out:st={s1 - 0.4:.2f}:d=0.4:alpha=1[o{k}]")
+        chain.append(f"[{cur}][o{k}]overlay=0:0:enable='between(t,{s0:.2f},{s1:.2f})'[{nxt}]")
+        cur = nxt
+    return chain, cur
+
 if frame != "none" and os.path.exists(ov):
+    cc, last = card_chain("s", 3)
     run(["ffmpeg", "-y", "-i", os.path.join(work, "video.mp4"), "-i", os.path.join(work, "voice.wav"), "-i", ov,
-         "-filter_complex", f"[0:v]subtitles={os.path.join(work, 'subs.ass')}[s];[2:v]scale={W}:{H}[fr];[s][fr]overlay=0:0[v]",
+         *sum([["-loop", "1", "-i", c] for c in card_inputs], []),
+         "-filter_complex", ";".join([f"[0:v]subtitles={os.path.join(work, 'subs.ass')}[s]"] + cc + [f"[2:v]scale={W}:{H}[fr];[{last}][fr]overlay=0:0:shortest=1[v]"]),
          "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
          "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out])
 else:
+    cc, last = card_chain("s", 2)
     run(["ffmpeg", "-y", "-i", os.path.join(work, "video.mp4"), "-i", os.path.join(work, "voice.wav"),
-         "-vf", f"subtitles={os.path.join(work, 'subs.ass')}", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+         *sum([["-loop", "1", "-i", c] for c in card_inputs], []),
+         "-filter_complex", ";".join([f"[0:v]subtitles={os.path.join(work, 'subs.ass')}[s]"] + cc + [f"[{last}]null[v]"]), "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
          "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out])
 
 desc = plan.get("description", "")
+credit_lines = []
 if credits:
-    desc += "\n\nVideos: " + ", ".join(sorted(credits))
+    credit_lines.append("Videos: " + ", ".join(sorted(credits)))
 if photo_credits:
-    desc += "\n\nPhotos: " + ", ".join(sorted(photo_credits)) + " on Unsplash"
+    credit_lines.append("Photos: " + ", ".join(sorted(photo_credits)) + " on Unsplash")
+if credit_lines:
+    disclosure = "For entertainment and informational purposes only."
+    before, separator, after = desc.partition(disclosure)
+    if separator:
+        ending = separator + after
+        credits_text = "\n\n" + "\n".join(credit_lines)
+        remaining = max(0, 1000 - len(ending) - len(credits_text) - 2)
+        desc = before[:remaining].rstrip() + credits_text + "\n\n" + ending
+    else:
+        desc = desc[:max(0, 1000 - len("\n\n".join(credit_lines)) - 2)].rstrip() + "\n\n" + "\n\n".join(credit_lines)
 meta = {"title": plan.get("title", "")[:100], "description": desc, "tags": plan.get("tags", [])}
 json.dump(meta, open(os.path.join(os.path.dirname(out), "meta.json"), "w"), ensure_ascii=False)
+
+# Generate one topic-specific 1K thumbnail from the approved title, not a generic scene.
+def make_thumbnail():
+    key = os.environ.get("LOVABLE_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("AI image key is missing; thumbnail was not generated")
+    prompt = ("Create a photorealistic, editorial YouTube thumbnail for a US documentary. "
+              "Show the literal subject and location of this video with an instantly legible visual story, "
+              "one clear focal point, expressive real lighting and strong contrast. No unrelated objects, "
+              "no cartoons, nudity, insects, invented numbers or misleading claims. "
+              "No documents, bills, receipts, signs, writing, letters, or numbers anywhere in the image; "
+              "leave the left third dark and visually quiet for a short title overlay. Video title: " + str(plan.get("title", ""))[:100] +
+              ". Opening scene: " + str((plan.get("scenes") or [{}])[0].get("text", ""))[:200])
+    url = "https://ai.gateway.lovable.dev/v1/images/generations"
+    body = {"model": "openai/gpt-image-2.5-sunburst", "prompt": prompt,
+            "size": "1536x1024", "quality": "low", "stream": True, "partial_images": 1}
+    headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
+    def request(payload, streamed):
+        response = requests.post(url, headers=headers, json=payload, stream=streamed)
+        if not response.ok:
+            try: message = response.json().get("error", {}).get("message") or response.text[:300]
+            except Exception: message = response.text[:300]
+            raise RuntimeError("Thumbnail generation failed (" + str(response.status_code) + "): " + str(message))
+        return response
+    response = request(body, True)
+    saw_event, finished, image = False, False, None
+    try:
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data:"): continue
+            try: event = json.loads(line[5:].strip())
+            except (ValueError, TypeError): continue
+            if not isinstance(event, dict): continue
+            kind = event.get("type", "")
+            if kind == "error":
+                raise RuntimeError("Thumbnail generation failed: " + str((event.get("error") or {}).get("message") or "Image generation denied"))
+            if kind in ("image_generation.partial_image", "image_generation.completed"):
+                saw_event = True
+                if kind == "image_generation.completed":
+                    finished, image = True, event.get("b64_json")
+    finally:
+        response.close()
+    if not saw_event:
+        replay = request({k: v for k, v in body.items() if k not in ("stream", "partial_images")}, False)
+        image = (replay.json().get("data") or [{}])[0].get("b64_json")
+        finished = bool(image)
+    if not finished or not image:
+        raise RuntimeError("Thumbnail stream ended without a completed image")
+    import io
+    from PIL import ImageOps
+    picture = Image.open(io.BytesIO(base64.b64decode(image))).convert("RGB")
+    picture = ImageOps.fit(picture, (1280, 720), method=Image.Resampling.LANCZOS)
+    title_words = str(plan.get("title", "")).split()[:6]
+    headline = " ".join(title_words).upper()
+    if headline:
+        overlay = Image.new("RGBA", picture.size, (0, 0, 0, 0))
+        shade = ImageDraw.Draw(overlay)
+        shade.rectangle((0, 0, 690, 720), fill=(0, 0, 0, 175))
+        font = ImageFont.truetype(FB, 72)
+        lines, line = [], ""
+        for word in headline.split():
+            candidate = (line + " " + word).strip()
+            if line and shade.textlength(candidate, font=font) > 580:
+                lines.append(line); line = word
+            else: line = candidate
+        if line: lines.append(line)
+        while len(lines) > 4:
+            title_words.pop()
+            headline = " ".join(title_words).upper()
+            lines, line = [], ""
+            for word in headline.split():
+                candidate = (line + " " + word).strip()
+                if line and shade.textlength(candidate, font=font) > 580:
+                    lines.append(line); line = word
+                else: line = candidate
+            if line: lines.append(line)
+        for i, text in enumerate(lines):
+            shade.text((55, 200 + i * 95), text, font=font, fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0, 255))
+        picture = Image.alpha_composite(picture.convert("RGBA"), overlay).convert("RGB")
+    picture.save(os.path.join(os.path.dirname(out), "thumbnail.jpg"), quality=90, optimize=True)
+
+make_thumbnail()
 print("Done:", out, f"{t0:.1f}s")
