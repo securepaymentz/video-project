@@ -1,4 +1,4 @@
-"""stock-engine v50 (installed by Studio)
+"""stock-engine v51 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -278,6 +278,9 @@ def candidate_ok(query, metadata, location=""):
     both = text + " " + place
     # REAL FOOTAGE ONLY: never cartoons, anime, illustrations, 3D renders or AI-looking art.
     if any(w in both for w in CARTOON_BAD):
+        return False
+    # Never spiders, insects or creepy-crawlies.
+    if re.search(r"\b(spiders?|arachnids?|tarantulas?|insects?|bugs?|cockroach(es)?|scorpions?|worms?|ants?|beetles?|centipedes?)\b", both):
         return False
     # Never any adult/sexual content, whatever the scene.
     if any(w in both for w in NSFW_BAD):
@@ -1273,8 +1276,49 @@ def render_visual(v, d, seg, i):
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
     return True
 
+MY_CLIPS = [c for c in (plan.get("my_clips") or []) if isinstance(c, dict) and c.get("url")]
+CUR_CLIP = None
+
+
+def use_my_clip(i, d, seg, clip):
+    """Render the creator's hand-picked clip/photo for this scene (no stock search at all)."""
+    vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1"
+    ext = "jpg" if clip.get("kind") == "photo" else "mp4"
+    raw = os.path.join(work, f"my{i}_{int(d * 100)}.{ext}")
+    with requests.get(clip["url"], stream=True, timeout=120) as r:
+        r.raise_for_status()
+        with open(raw, "wb") as f:
+            for chunk in r.iter_content(1 << 20): f.write(chunk)
+    if ext == "jpg":
+        photo_credits.add(clip.get("author") or "Stock")
+        frames = int(d * 30) + 1
+        z = "min(1+0.0012*on,1.25)" if i % 2 == 0 else "max(1.25-0.0012*on,1)"
+        kb = (f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},"
+              f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps=30,setsar=1")
+        run(["ffmpeg", "-y", "-loop", "1", "-i", raw, "-t", f"{d:.2f}", "-vf", kb, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
+    else:
+        credits.add(clip.get("author") or "Stock")
+        # different start point each time the same clip is reused, so repeats look fresh
+        try: L = duration(raw)
+        except Exception: L = 0
+        ss = (i * 3.7) % max(0.1, L - d) if L > d + 1 else 0
+        zp = "zoompan=z='min(1+0.0011*on,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'" if i % 2 == 0 else "zoompan=z='max(1.15-0.0011*on,1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+        run(["ffmpeg", "-y", "-ss", f"{ss:.2f}", "-stream_loop", "-1", "-i", raw, "-t", f"{d:.3f}", "-an", "-vf", vf + "," + zp + f":d=1:s={W}x{H}:fps=30,setsar=1",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
+    return True
+
+
 def make_footage(i, q, d, seg, want_photo):
     """Fast-cut real footage for d seconds (clips first, photo as backup). Returns False if nothing fits."""
+    if MY_CLIPS:
+        clip = CUR_CLIP if (CUR_CLIP and i < 900) else MY_CLIPS[i % len(MY_CLIPS)]
+        try:
+            return use_my_clip(i, d, seg, clip)
+        except Exception as e:
+            print("Picked clip failed, trying another picked clip:", e)
+            try: return use_my_clip(i, d, seg, MY_CLIPS[(i + 1) % len(MY_CLIPS)])
+            except Exception as e2: print("Picked clip failed:", e2)
+            return False
     vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1"
     link, author = (None, None) if want_photo else find_clip(q, d)
     if not link and i < 3:
@@ -1496,6 +1540,7 @@ for i, sc in enumerate(plan["scenes"]):
     seg = os.path.join(work, f"s{i}.mp4")
     q = sc.get("query", plan.get("fallback_query", "city"))
     set_scene_subject(sc.get("subject") or "")
+    CUR_CLIP = sc.get("clip") if isinstance(sc.get("clip"), dict) and sc["clip"].get("url") else None
     vis = sc.get("visual") if i >= 3 else None  # the video ALWAYS opens on real footage
     done = False
     if vis:
