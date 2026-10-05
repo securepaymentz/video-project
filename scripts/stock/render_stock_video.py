@@ -1,4 +1,4 @@
-"""stock-engine v72 (installed by Studio)
+"""stock-engine v73 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1257,8 +1257,11 @@ def render_visual(v, d, seg, i):
     # Background = the scene's own footage, darkened, so viewers keep watching video under the graphic.
     bg = os.path.join(work, f"gb{i}.mp4")
     has_bg = False
+    # A paid AI photo background (presentation scenes) is used as-is; no stock search.
+    if v.get("_aibg") and os.path.exists(v["_aibg"]):
+        bg = v["_aibg"]; has_bg = True
     # Use the scene's selected image for a presentation; only automatic videos search fallbacks.
-    tries = [] if v.get("_nobg") else [v.get("query")]
+    tries = [] if (v.get("_nobg") or has_bg) else [v.get("query")]
     # Theme fallbacks stay on-topic (no generic street shots that end up showing taxis).
     # Never generic money shots: fall back to real American people at work.
     if not MY_CLIPS:
@@ -1558,6 +1561,54 @@ if reporter_seg:
     # The video OPENS with the Lovable AI cinematic opener (frame + SFX on top, no captions — no spoken line).
     rep_at = {0}
 
+def gen_ai_image(prompt, size):
+    # Owner's own OpenAI (ChatGPT API) key first: billed to their OpenAI account, cheapest mini model.
+    if OPENAI:
+        try:
+            ro = requests.post("https://api.openai.com/v1/images/generations",
+                               headers={"Authorization": f"Bearer {OPENAI}", "Content-Type": "application/json"},
+                               json={"model": IMG_MODEL, "prompt": prompt, "size": size, "quality": "low", "n": 1}, timeout=300)
+            ro.raise_for_status()
+            import io
+            return Image.open(io.BytesIO(base64.b64decode(ro.json()["data"][0]["b64_json"]))).convert("RGB")
+        except Exception as e:
+            print("OpenAI key image failed, using Lovable AI:", str(e)[:200])
+    key = os.environ.get("LOVABLE_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("AI image key is missing")
+    url = "https://ai.gateway.lovable.dev/v1/images/generations"
+    body = {"model": "openai/gpt-image-2.5-sunburst", "prompt": prompt, "size": size, "quality": "low", "stream": True, "partial_images": 1}
+    headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
+    r = requests.post(url, headers=headers, json=body, stream=True)
+    if not r.ok:
+        raise RuntimeError("AI image failed (" + str(r.status_code) + "): " + r.text[:300])
+    saw, image = False, None
+    try:
+        for line in r.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data:"): continue
+            try: ev = json.loads(line[5:].strip())
+            except (ValueError, TypeError): continue
+            if not isinstance(ev, dict): continue
+            k = ev.get("type", "")
+            if k == "error":
+                raise RuntimeError("AI image failed: " + str((ev.get("error") or {}).get("message")))
+            if k in ("image_generation.partial_image", "image_generation.completed"):
+                saw = True
+                if k == "image_generation.completed": image = ev.get("b64_json")
+    finally:
+        r.close()
+    if not saw:
+        body2 = {k: v for k, v in body.items() if k not in ("stream", "partial_images")}
+        r2 = requests.post(url, headers=headers, json=body2)
+        if not r2.ok: raise RuntimeError("AI image failed (" + str(r2.status_code) + ")")
+        image = (r2.json().get("data") or [{}])[0].get("b64_json")
+    if not image:
+        raise RuntimeError("AI image stream ended without an image")
+    import io
+    return Image.open(io.BytesIO(base64.b64decode(image))).convert("RGB")
+
+AI_SPENT = 0  # paid AI pictures used so far (presentation backgrounds + full-screen cards share one budget)
+
 t0 = 0.0
 card_spans = []
 starts = []
@@ -1589,6 +1640,27 @@ for i, sc in enumerate(plan["scenes"]):
         # A scene with no matching approved image is a full-length presentation,
         # including opening scenes; never try another stock image or paid generation.
         vis = dict(vis, query=q, _nobg=presentation_only)
+        # Paid AI photo as the presentation background (switch "AI presentation backgrounds"):
+        # a real-looking photo of the scene's subject behind the text, instead of a plain color.
+        if presentation_only and plan.get("ai_presentations") and AI_SPENT < 20:
+            try:
+                subject_ = str(sc.get("subject") or sc.get("query") or "").strip()
+                _img = gen_ai_image("Photorealistic cinematic editorial photo, real lighting, 35mm, United States setting, wide composition "
+                                    "with calm darker space for overlaid text. Show literally and only: " + subject_ +
+                                    ". Context sentence: " + str(sc.get("text", ""))[:220] +
+                                    ". No text, letters, numbers, signs, logos, cartoons, CGI, nudity or insects. "
+                                    "If the subject is an object, show only the object with no people.", "1536x1024")
+                _ip = os.path.join(work, f"aibg{i}.png"); _img.convert("RGB").save(_ip)
+                _frames = int((d + 0.1) * 30) + 1
+                _kb = (f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},"
+                       f"zoompan=z='min(zoom+0.0006,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={_frames}:s={W}x{H}:fps=30,setsar=1")
+                _bp = os.path.join(work, f"aibg{i}.mp4")
+                run(["ffmpeg", "-y", "-loop", "1", "-i", _ip, "-t", f"{d + 0.1:.2f}", "-vf", _kb,
+                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", _bp])
+                vis["_aibg"] = _bp
+                AI_SPENT += 1
+            except Exception as e:
+                print("AI presentation background skipped:", e)
         # Presentation graphics stay on screen up to 30 seconds so people can read them.
         gd = d if presentation_only else min(d, 30.0)
         gseg = os.path.join(work, f"g{i}.mp4")
@@ -1804,52 +1876,6 @@ if frame != "none" and os.path.exists(ov) and len(fcolor) == 6:
                 px[xx, yy] = (int(nr * 255), int(ng * 255), int(nb * 255), a)
     ov = os.path.join(work, "frame_colored.png")
     im.save(ov)
-def gen_ai_image(prompt, size):
-    # Owner's own OpenAI (ChatGPT API) key first: billed to their OpenAI account, cheapest mini model.
-    if OPENAI:
-        try:
-            ro = requests.post("https://api.openai.com/v1/images/generations",
-                               headers={"Authorization": f"Bearer {OPENAI}", "Content-Type": "application/json"},
-                               json={"model": IMG_MODEL, "prompt": prompt, "size": size, "quality": "low", "n": 1}, timeout=300)
-            ro.raise_for_status()
-            import io
-            return Image.open(io.BytesIO(base64.b64decode(ro.json()["data"][0]["b64_json"]))).convert("RGB")
-        except Exception as e:
-            print("OpenAI key image failed, using Lovable AI:", str(e)[:200])
-    key = os.environ.get("LOVABLE_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("AI image key is missing")
-    url = "https://ai.gateway.lovable.dev/v1/images/generations"
-    body = {"model": "openai/gpt-image-2.5-sunburst", "prompt": prompt, "size": size, "quality": "low", "stream": True, "partial_images": 1}
-    headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
-    r = requests.post(url, headers=headers, json=body, stream=True)
-    if not r.ok:
-        raise RuntimeError("AI image failed (" + str(r.status_code) + "): " + r.text[:300])
-    saw, image = False, None
-    try:
-        for line in r.iter_lines(decode_unicode=True):
-            if not line or not line.startswith("data:"): continue
-            try: ev = json.loads(line[5:].strip())
-            except (ValueError, TypeError): continue
-            if not isinstance(ev, dict): continue
-            k = ev.get("type", "")
-            if k == "error":
-                raise RuntimeError("AI image failed: " + str((ev.get("error") or {}).get("message")))
-            if k in ("image_generation.partial_image", "image_generation.completed"):
-                saw = True
-                if k == "image_generation.completed": image = ev.get("b64_json")
-    finally:
-        r.close()
-    if not saw:
-        body2 = {k: v for k, v in body.items() if k not in ("stream", "partial_images")}
-        r2 = requests.post(url, headers=headers, json=body2)
-        if not r2.ok: raise RuntimeError("AI image failed (" + str(r2.status_code) + ")")
-        image = (r2.json().get("data") or [{}])[0].get("b64_json")
-    if not image:
-        raise RuntimeError("AI image stream ended without an image")
-    import io
-    return Image.open(io.BytesIO(base64.b64decode(image))).convert("RGB")
-
 # Overlays written straight onto the footage (no white card):
 #  - AI pictures (switch on): up to 20 photoreal 1K pictures spread across the video, shown full screen for
 #    10s each with the headline and the scene's key number written on the image. With the owner's OpenAI key
@@ -1882,7 +1908,7 @@ if plan.get("ai_cards"):
     pool = [c for c in card_spans if c[0] >= 2 and not c[3] and c[2] >= 3.5]
     # Only as many pictures as the video needs: about 1 per 30s, never more than 20.
     # A 45s short gets 1-2; a 10min video gets up to 20.
-    MAX_AI_CARDS = max(1, min(20, int((t0 - 5) // 30)))
+    MAX_AI_CARDS = max(0, min(20, int((t0 - 5) // 30)) - AI_SPENT)
     # Evenly spread the pictures across the whole video; scenes with a key number are preferred.
     def _spread(lst, k):
         if k <= 0 or not lst: return []
@@ -1915,7 +1941,7 @@ if plan.get("ai_cards"):
         img = Image.alpha_composite(img, shade)
         write_text(img, " ".join(subject.upper().split()[:5]), key_number(sc.get("text")))
         cp = os.path.join(work, f"aicard{n}.png"); img.save(cp)
-        card_inputs.append(cp); card_filters.append((s0, s1, "full"))
+        card_inputs.append(cp); card_filters.append((s0, s1, "full")); AI_SPENT += 1
     print("AI pictures:", len(card_inputs))
 data_n = 0
 if plan.get("data_callouts", True):
