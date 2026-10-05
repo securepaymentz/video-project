@@ -1,4 +1,4 @@
-# stock-engine v35 (installed by Studio)
+# stock-engine v40 (installed by Studio)
 name: Stock Clips Video
 
 on:
@@ -61,14 +61,14 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
-          HIGGSFIELD_KEY_ID: ${{ secrets.HIGGSFIELD_KEY_ID }}
-          HIGGSFIELD_KEY_SECRET: ${{ secrets.HIGGSFIELD_KEY_SECRET }}
+          HIGGSFIELD_API_KEY: ${{ secrets.HIGGSFIELD_API_KEY }}
           HIGGSFIELD_VOICE_ID: ${{ secrets.HIGGSFIELD_VOICE_ID }}
           HIGGSFIELD_TTS_MODEL: ${{ secrets.HIGGSFIELD_TTS_MODEL }}
           HIGGSFIELD_MUSIC_MODEL: ${{ secrets.HIGGSFIELD_MUSIC_MODEL }}
           HEYGEN_API_KEY: ${{ secrets.HEYGEN_API_KEY }}
           HEYGEN_AVATAR_ID: ${{ secrets.HEYGEN_AVATAR_ID }}
           HEYGEN_AVATAR_TYPE: ${{ secrets.HEYGEN_AVATAR_TYPE }}
+          HEYGEN_AVATAR_IDS: ${{ secrets.HEYGEN_AVATAR_IDS }}
           PREMIUM_VOICE: ${{ github.event.inputs.premium_voice }}
         run: python scripts/stock/render_stock_video.py /tmp/brand-video/daily-video.mp4
 
