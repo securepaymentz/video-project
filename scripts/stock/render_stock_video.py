@@ -1,4 +1,4 @@
-"""stock-engine v73 (installed by Studio)
+"""stock-engine v74 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -161,7 +161,7 @@ DENTAL = {"dentist", "dentists", "dental", "teeth", "tooth", "orthodontist", "br
 for _w in ("dentist", "dentists", "dental", "teeth", "tooth", "orthodontist", "braces", "hygienist", "dentistry"):
     ANCHORS[_w] = DENTAL
 MED |= DENTAL
-# US brands & chains: if the script names one, the clip MUST show that brand (its name, logo, products or stores) —
+# US brands & chains: if the script names one, the clip MUST show that brand (its name, logo, products or stores) \u2014
 # never a generic restaurant, construction site or street. "mcdonald's" tokenizes to "mcdonald".
 BRANDS = {
     "mcdonald": {"mcdonald", "mcdonalds", "big mac", "mcnuggets", "golden arches", "mcflurry", "happymeal", "happy meal"},
@@ -206,7 +206,7 @@ def extract_words(s):
 
 
 def stem(w):
-    """eggs->egg, prices->price, boxes->box, groceries->grocery — so a tag 'egg' matches the word 'eggs'."""
+    """eggs->egg, prices->price, boxes->box, groceries->grocery \u2014 so a tag 'egg' matches the word 'eggs'."""
     if len(w) > 4 and w.endswith("ies"): return w[:-3] + "y"
     if len(w) > 4 and w.endswith(("ches", "shes", "xes", "sses")): return w[:-2]
     if len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")): return w[:-1]
@@ -217,7 +217,7 @@ def stems(s):
     return {stem(w) for w in extract_words(s)}
 
 
-# Words too vague to prove a scene (a "line" or "building" can be anything) — never used as the must-see subject.
+# Words too vague to prove a scene (a "line" or "building" can be anything) \u2014 never used as the must-see subject.
 WEAK = {"building", "buildings", "line", "people", "person", "man", "woman", "men", "women", "room", "area", "street", "city", "scene",
         "place", "thing", "things", "background", "life", "day", "time", "price", "prices", "cost", "costs", "rising", "high", "new",
         "old", "big", "small", "american", "americans", "usa", "us", "america", "united", "states", "exterior", "interior", "closeup"}
@@ -267,7 +267,7 @@ CARTOON_BAD = ["anime", "animation", "animated", "cartoon", "toon", "manga", "il
                "3d render", "3d animation", "cgi", "vector", "drawing", "clipart", "clip art", "digital art",
                "ai generated", "render", "figurine", "doll", "plush", "mascot", "character design", "pixar"]
 
-# Absolute bans: adult/sexual content and confusing close-ups of bodies — never allowed in any scene.
+# Absolute bans: adult/sexual content and confusing close-ups of bodies \u2014 never allowed in any scene.
 NSFW_BAD = ["nude", "naked", "nudity", "nsfw", "sexy", "lingerie", "bikini", "underwear", "topless", "erotic",
             "sensual", "breast", "buttocks", "porn", "fetish", "strip", "seductive", "intimate"]
 # People words: used to reject people shots when the scene is about an OBJECT (cars, eggs, prices...).
@@ -292,16 +292,16 @@ def candidate_ok(query, metadata, location=""):
     if any(has_word(w, both) for w in FOREIGN_WORDS):
         return False
     # UNIVERSAL SUBJECT RULE: whatever the sentence talks about (eggs, beef, dentist, McDonald's, tires...)
-    # must be in the result — otherwise it is rejected, no matter how "close" it looks.
+    # must be in the result \u2014 otherwise it is rejected, no matter how "close" it looks.
     if not must_ok(both):
         return False
     subject_hit = bool(SCENE_MUST)
     # OBJECT RULE: when the scene is about a thing (cars, eggs, houses, phones...) and NOT about
-    # people at work, reject clips whose tags are about people — "cars" must show only cars.
+    # people at work, reject clips whose tags are about people \u2014 "cars" must show only cars.
     if subject_hit and not (SCENE_MUST & {stem(w) for w in WORK}) and not (SCENE_MUST & stems("people person crowd family")):
         if extract_words(both) & PEOPLE_WORDS and not (extract_words(both) & set(SCENE_MUST)):
             return False
-        # Even if the object is tagged, a clip dominated by people tags is confusing — reject it.
+        # Even if the object is tagged, a clip dominated by people tags is confusing \u2014 reject it.
         people_hits = len(extract_words(both) & PEOPLE_WORDS)
         if people_hits >= 2:
             return False
@@ -319,7 +319,7 @@ def candidate_ok(query, metadata, location=""):
             return False
     if place and not any(has_word(w, place) for w in US_WORDS):
         return False
-    # Named state/city: the clip must show THAT place — never another US city, never a "neighbour".
+    # Named state/city: the clip must show THAT place \u2014 never another US city, never a "neighbour".
     places = named_places(query)
     if places and not any(has_word(w, both) for w in places):
         return False
@@ -329,7 +329,7 @@ def candidate_ok(query, metadata, location=""):
     if (qw & MED_TRIGGERS) and not (qw & {"ambulance", "paramedic", "emergency"}) and (words & MED_BLOCK):
         return False
     # Named brand (McDonald's, Walmart, Tesla...): the result must literally mention the brand or its
-    # products — a brand scene can NEVER be filled with a generic restaurant/store/construction clip.
+    # products \u2014 a brand scene can NEVER be filled with a generic restaurant/store/construction clip.
     qtext = str(query).lower().replace("'", "").replace("-", "").replace(" ", "")
     brand_hit = False
     for b, syn in BRANDS.items():
@@ -337,7 +337,7 @@ def candidate_ok(query, metadata, location=""):
             if not any(s.replace(" ", "") in both.replace("-", " ").replace(" ", "") or has_word(s, both) for s in syn):
                 return False
             brand_hit = True
-    # A verified brand IS the subject — accept it without further word overlap.
+    # A verified brand IS the subject \u2014 accept it without further word overlap.
     if brand_hit:
         return True
     # Exact subject: anchor nouns (dealership, hospital...) must appear themselves or as a true synonym.
@@ -347,10 +347,10 @@ def candidate_ok(query, metadata, location=""):
     for t in anchor_terms:
         if t in ANCHORS and not (ANCHORS[t] & words):
             return False
-    # Anchor terms that passed above are satisfied — accept.
+    # Anchor terms that passed above are satisfied \u2014 accept.
     if any(t in ANCHORS for t in terms):
         return True
-    # A named place was literally verified above — the place IS the scene, accept it.
+    # A named place was literally verified above \u2014 the place IS the scene, accept it.
     if places:
         return True
     if not terms or subject_hit:
@@ -1117,7 +1117,7 @@ def frame_timeline(v, t, p, cache):
 def frame_quote(v, t, p, cache):
     img, d = base(v, cache, t, "dark", 18)
     qf = Fnt(FSERIF, 360 * U)
-    d.text((W * 0.07, H * 0.02), "“", font=qf, fill=ACC)
+    d.text((W * 0.07, H * 0.02), "\u201C", font=qf, fill=ACC)
     tf = Fnt(FSERIF, 76 * U)
     lines = wrap(v["headline"], tf, W * 0.74)
     y = H / 2 - len(lines) * tf.size * 0.65
@@ -1125,7 +1125,7 @@ def frame_quote(v, t, p, cache):
         g = ease(p * 1.8 - k * 0.2)
         d.text((W * 0.14, y + k * tf.size * 1.3 + (1 - g) * 20 * U), ln, font=tf, fill=(255, 255, 255, int(255 * g)))
     if v.get("sub"):
-        d.text((W * 0.14, y + len(lines) * tf.size * 1.3 + 30 * U), "— " + v["sub"], font=Fnt(FB, 46 * U), fill=ACC)
+        d.text((W * 0.14, y + len(lines) * tf.size * 1.3 + 30 * U), "\u2014 " + v["sub"], font=Fnt(FB, 46 * U), fill=ACC)
     return img
 
 
@@ -1291,15 +1291,33 @@ CUR_CLIP = None
 SCENE_CLIPS = []
 
 
+def download_retry(url, path, tries=5):
+    """Download with retries + backoff (handles 429 rate limits and flaky connections)."""
+    last = None
+    for k in range(tries):
+        try:
+            with requests.get(url, stream=True, timeout=120, headers={"User-Agent": "Mozilla/5.0 (StudioRenderer)"}) as r:
+                if r.status_code in (429, 500, 502, 503, 504):
+                    ra = r.headers.get("Retry-After")
+                    wait = float(ra) if ra and ra.replace(".", "").isdigit() else 3 * (2 ** k)
+                    print(f"Download {r.status_code}, retry {k + 1}/{tries} in {wait:.0f}s")
+                    time.sleep(min(wait, 60)); last = Exception(f"HTTP {r.status_code}"); continue
+                r.raise_for_status()
+                with open(path, "wb") as f:
+                    for chunk in r.iter_content(1 << 20): f.write(chunk)
+                return True
+        except Exception as e:
+            last = e; print(f"Download error, retry {k + 1}/{tries}:", e); time.sleep(3 * (2 ** k))
+    raise last or Exception("download failed")
+
+
 def use_my_clip(i, d, seg, clip):
     """Render the creator's hand-picked clip/photo for this scene (no stock search at all)."""
     vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1"
     ext = "jpg" if clip.get("kind") == "photo" else "mp4"
     raw = os.path.join(work, f"my{i}_{int(d * 100)}.{ext}")
-    with requests.get(clip["url"], stream=True, timeout=120) as r:
-        r.raise_for_status()
-        with open(raw, "wb") as f:
-            for chunk in r.iter_content(1 << 20): f.write(chunk)
+    download_retry(clip["url"], raw)
+    time.sleep(0.4)
     if ext == "jpg":
         photo_credits.add(clip.get("author") or "Stock")
         frames = int(d * 30) + 1
@@ -1327,12 +1345,24 @@ def make_scene_footage(i, q, d, seg, want_photo=False):
     if not chosen:
         return False
     if len(chosen) == 1:
-        return use_my_clip(i, d, seg, chosen[0])
+        try:
+            return use_my_clip(i, d, seg, chosen[0])
+        except Exception as e:
+            print("Approved clip unavailable after retries; using presentation instead:", e)
+            return False
     parts = []
     for k, clip in enumerate(chosen):
         part = os.path.join(work, f"selected{i}_{k}_{int(d * 100)}.mp4")
-        use_my_clip(i * 100 + k, d / len(chosen), part, clip)
-        parts.append(part)
+        try:
+            use_my_clip(i * 100 + k, d / len(chosen), part, clip)
+            parts.append(part)
+        except Exception as e:
+            print("Skipping unavailable clip:", e)
+    if not parts:
+        return False
+    if len(parts) == 1:
+        run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", parts[0], "-t", f"{d:.2f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
+        return True
     lst = os.path.join(work, f"selected{i}_{int(d * 100)}.txt")
     with open(lst, "w") as f:
         f.writelines(f"file '{p}'\n" for p in parts)
@@ -1558,7 +1588,7 @@ if tk.get("url") and 0 <= tk_after < n_sc:
         tk_seg = None
 rep_at = set()
 if reporter_seg:
-    # The video OPENS with the Lovable AI cinematic opener (frame + SFX on top, no captions — no spoken line).
+    # The video OPENS with the Lovable AI cinematic opener (frame + SFX on top, no captions \u2014 no spoken line).
     rep_at = {0}
 
 def gen_ai_image(prompt, size):
@@ -1681,7 +1711,7 @@ for i, sc in enumerate(plan["scenes"]):
     if not done:
         done = make_scene_footage(i, q, d, seg, UNSPLASH and i >= 3 and i % 3 == 2)
     if not done and SCENE_SUBJECT and SCENE_SUBJECT != q.lower():
-        # Same subject, simpler search (e.g. just "eggs") — clip first, then a photo with slow motion.
+        # Same subject, simpler search (e.g. just "eggs") \u2014 clip first, then a photo with slow motion.
         try:
             done = make_footage(i, SCENE_SUBJECT, d, seg, False)
         except Exception as e:
@@ -1699,7 +1729,7 @@ for i, sc in enumerate(plan["scenes"]):
             if done:
                 break
     if not done:
-        print("No matching US stock for scene", i, "— using a titled graphic")
+        print("No matching US stock for scene", i, "\u2014 using a titled graphic")
         headline = " ".join(text.split()[:7]).upper()[:60]
         if not render_visual({"type": "title", "headline": headline, "color": "dark", "_nobg": True}, d, seg, i):
             raise RuntimeError(f"Could not render scene {i} without unrelated stock")
