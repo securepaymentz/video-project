@@ -1,4 +1,4 @@
-"""stock-engine v51 (installed by Studio)
+"""stock-engine v52 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1664,7 +1664,8 @@ if (USE_HF_AUDIO or EL_KEY) and plan.get("sfx", True):
     prompt = (mood + ", " if mood else "") + style
     print("Sound identity:", prompt, "|", pack["cut"])
     music = os.path.join(work, "music.mp3")
-    have_music = el_audio("https://api.elevenlabs.io/v1/music", {"prompt": prompt + ", instrumental, no vocals, energetic intro, evolving sections, loopable", "music_length_ms": int(min(total, 300) * 1000) + 2000}, music) \
+    # Generate only ~60s of seamless loopable music and loop it under the whole video (saves ~80% of music cost).
+    have_music = el_audio("https://api.elevenlabs.io/v1/music", {"prompt": prompt + ", instrumental, no vocals, seamless loopable background track, consistent energy, no big drops or endings", "music_length_ms": int(min(total, 60) * 1000)}, music) \
         or el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": prompt + ", instrumental background music loop, no vocals", "duration_seconds": 22, "loop": True, "prompt_influence": 0.5}, music)
     sfx = {}
     for k, dur in (("cut", 0.8), ("cut2", 0.8), ("hit", 1.5), ("riser", 2.0), ("pop", 0.6)):
