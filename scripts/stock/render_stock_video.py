@@ -1,4 +1,4 @@
-"""stock-engine v76 (installed by Studio)
+"""stock-engine v77 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1609,7 +1609,8 @@ def fresh_category_image(prompt, image):
 
 def gen_ai_image(prompt, size):
     global AI_IMAGE_BLOCKED
-    if plan.get("category_images"):
+    unique = bool(plan.get("category_images") or plan.get("ai_presentations"))
+    if unique:
         if AI_IMAGE_BLOCKED or not OPENAI:
             raise RuntimeError("ChatGPT photos unavailable; keeping approved clips and free presentations.")
         import hashlib
@@ -1632,9 +1633,9 @@ def gen_ai_image(prompt, size):
             ro.raise_for_status()
             import io
             image = Image.open(io.BytesIO(base64.b64decode(ro.json()["data"][0]["b64_json"]))).convert("RGB")
-            return fresh_category_image(prompt, image) if plan.get("category_images") else image
+            return fresh_category_image(prompt, image) if unique else image
         except Exception as e:
-            if plan.get("category_images"):
+            if unique:
                 if isinstance(e, requests.HTTPError): AI_IMAGE_BLOCKED = True
                 raise RuntimeError("ChatGPT photo skipped; no paid provider fallback: " + str(e)[:200]) from e
             print("OpenAI key image failed, using Lovable AI:", str(e)[:200])
