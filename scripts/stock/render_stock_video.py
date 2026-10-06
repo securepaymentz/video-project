@@ -1,4 +1,4 @@
-"""stock-engine v89 (installed by Studio)
+"""stock-engine v91 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -532,7 +532,7 @@ def ass_time(t):
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
-fs = 78 if vertical else 64
+fs = 62 if vertical else 46
 events = []
 segments, audios, credits, photo_credits = [], [], set(), set()
 
@@ -546,6 +546,53 @@ IMG_MODEL = os.environ.get("OPENAI_IMAGE_MODEL", "").strip() or "gpt-image-1-min
 BG = {"red": ((125, 14, 14), (35, 0, 0)), "blue": ((14, 44, 150), (2, 8, 48)),
       "green": ((12, 95, 55), (2, 28, 14)), "dark": ((48, 48, 58), (8, 8, 12))}
 U = min(W, H) / 1080.0
+
+
+def caption_events(text, start, spoken_duration):
+    """Short fitted phrases; highlight one word using the existing estimated voice timing."""
+    words = text.split()
+    if not words or spoken_duration <= 0:
+        return []
+    font = ImageFont.truetype(FB, fs)
+    groups, group = [], []
+    for word in words:
+        candidate = group + [word]
+        if group and (len(candidate) > 4 or font.getlength(" ".join(candidate)) > W * 0.84):
+            groups.append(group); group = []
+        group.append(word)
+    if group: groups.append(group)
+    per = spoken_duration / len(words)
+    result, offset = [], 0
+    def safe(word):
+        # ASS override syntax must never come from narration text.
+        return word.replace("\\", "＼").replace("{", "(").replace("}", ")")
+    for phrase in groups:
+        size = fs
+        while size > 18 and ImageFont.truetype(FB, size).getlength(" ".join(phrase)) > W * 0.84:
+            size -= 2
+        for active in range(len(phrase)):
+            rendered = " ".join((r"{\c&H8DEBD4&}" if j == active else r"{\c&HFFFFFF&}") + safe(word) for j, word in enumerate(phrase))
+            tags = r"{\an5\pos(" + f"{W / 2:.0f},{H * 0.86:.0f}" + r")\fs" + str(size) + "}"
+            t = start + (offset + active) * per
+            result.append(f"Dialogue: 0,{ass_time(t)},{ass_time(t + per)},Cap,,0,0,0,,{tags}{rendered}")
+        offset += len(phrase)
+    return result
+
+
+def caption_ass(caption_lines):
+    return f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {W}
+PlayResY: {H}
+WrapStyle: 2
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Cap,DejaVu Sans,{fs},&H00FFFFFF,&H00FFFFFF,&H700D1218,&H700D1218,1,0,0,0,100,100,0,0,3,10,0,5,60,60,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+""" + "\n".join(caption_lines) + "\n"
 
 
 def fit(path, text, maxw, size):
@@ -593,7 +640,7 @@ def radial(c1, c2):
         pass
     im = im.convert("RGBA")
     # Semi-transparent tint: graphics sit on top of (darkened) footage, never a solid background.
-    im.putalpha(105)
+    im.putalpha(55)
     return im
 
 
@@ -654,7 +701,7 @@ def paper():
         for x in range(sm.width):
             sm.putpixel((x, y), 222 + rnd.randint(-14, 12))
     base = sm.resize((W, H), Image.BICUBIC).filter(ImageFilter.GaussianBlur(3))
-    return Image.merge("RGBA", (base, base, base.point(lambda v: min(255, v + 2)), Image.new("L", (W, H), 190)))
+    return Image.merge("RGBA", (base, base, base.point(lambda v: min(255, v + 2)), Image.new("L", (W, H), 115)))
 
 
 def object_image(desc, query):
@@ -805,7 +852,7 @@ def vignette():
         for y in range(36):
             for x in range(64):
                 dd = math.hypot((x - 32) / 32, (y - 18) / 18)
-                sm.putpixel((x, y), int(min(1.0, max(0.0, dd - 0.55) / 0.8) * 170))
+                sm.putpixel((x, y), int(min(1.0, max(0.0, dd - 0.55) / 0.8) * 75))
         ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         ov.putalpha(sm.resize((W, H), Image.BICUBIC))
         _VIG["v"] = ov
@@ -1247,7 +1294,7 @@ def frame_broadcast(v, t, p, cache):
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     accent = [(75, 210, 220, 255), (255, 169, 105, 255), (240, 111, 125, 255)][PV]
-    ink, white, muted = (9, 18, 27, 220), (255, 255, 255, 255), (220, 233, 240, 255)
+    ink, white, muted = (9, 18, 27, 155), (255, 255, 255, 255), (220, 233, 240, 255)
     x, bw = W * 0.075, W * (0.85 if vertical else 0.56)
     top, bottom = H * 0.12, H * (0.68 if vertical else 0.78)
     d.rectangle([x - W * 0.025, top - H * 0.025, x + bw + W * 0.025, bottom], fill=ink)
@@ -1330,6 +1377,11 @@ def render_visual(v, d, seg, i):
             fr = fn(v, t, p, cache)
             if v.get("type") != "card":
                 fr.alpha_composite(vignette())
+            # Shrink only the graphic foreground; full-bleed subject media stays
+            # unchanged underneath. Bottom 22% is reserved for captions/branding.
+            content = fr.resize((int(W * 0.78), int(H * 0.78)), Image.LANCZOS)
+            fr = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            fr.alpha_composite(content, (int(W * 0.11), 0))
             opening_location_overlay(fr, t, i)
             fr.save(os.path.join(fdir, f"f{k:03d}.png"))
     except Exception as e:
@@ -1359,9 +1411,8 @@ def render_visual(v, d, seg, i):
     if has_bg:
         bg_in = ["-i", bg]
     else:
-        print(f"Presentation {i}: no matching background available; no unrelated photo or unapproved AI purchase")
-        bg_in = ["-f", "lavfi", "-i", f"color=c=0x101014:s={W}x{H}:r=30:d={d + 0.1:.2f}"]
-    fc = (f"[0:v]scale={W}:{H},setsar=1,colorlevels=romax=0.72:gomax=0.72:bomax=0.72[b];"
+        raise RuntimeError(f"Scene {i + 1} needs a matching photo or video background. Add a clip showing its subject and retry; image-free presentations are not allowed.")
+    fc = (f"[0:v]scale={W}:{H},setsar=1,colorlevels=romax=0.92:gomax=0.92:bomax=0.92[b];"
           f"[1:v]format=rgba,tpad=stop_mode=clone:stop_duration={hold + 0.1:.2f}[g];"
           f"[b][g]overlay=0:0:format=auto,fps=30,format=yuv420p[o]")
     run(["ffmpeg", "-y", *bg_in, "-framerate", str(graphic_fps), "-i", os.path.join(fdir, "f%03d.png"),
@@ -1756,30 +1807,18 @@ for i, sc in enumerate(plan["scenes"]):
             if done:
                 break
     if not done:
-        print("No matching US stock for scene", i, "— using a titled graphic")
-        headline = " ".join(text.split()[:7]).upper()[:60]
-        if not render_visual({"type": "title", "headline": headline, "color": "dark", "_nobg": True}, d, seg, i):
-            raise RuntimeError(f"Could not render scene {i} without unrelated stock")
+        raise RuntimeError(f"Scene {i + 1} needs a matching photo or video. Add an exact-subject clip and retry; refusing an image-free or unrelated background.")
     pad = os.path.join(work, f"p{i}.wav")
     run(["ffmpeg", "-y", "-i", a, "-af", f"apad=whole_dur={d:.2f}", "-t", f"{d:.2f}", "-ar", "44100", "-ac", "2", pad])
     segments.append(seg); audios.append(pad)
-    # subtitles: chunks of ~4 words timed by word count
-    scene_words = text.split()
-    chunks = [" ".join(scene_words[k:k + 4]) for k in range(0, len(scene_words), 4)] or [""]
-    speak_d = d - 0.25
-    per = speak_d / max(1, len(scene_words))
-    t = t0
-    for c in chunks:
-        cd = per * len(c.split())
-        events.append(f"Dialogue: 0,{ass_time(t)},{ass_time(t + cd)},Cap,,0,0,0,,{c.upper()}")
-        t += cd
+    events.extend(caption_events(text, t0, d - 0.25))
     card_spans.append((i, t0, d, bool(vis) or presentation_only))
     t0 += d
     if tk_seg and i == tk_after:
         # Real TikTok reaction: vertical clip centered over the dimmed, blurred footage of this scene, original audio.
         segments.append(tk_seg); audios.append(tk_aud)
         gfx_starts.append(t0)
-        events.append(f"Dialogue: 0,{ass_time(t0)},{ass_time(t0 + tk_d)},Cap,,0,0,0,,@{str(tk.get('creator', '')).upper()} ON TIKTOK")
+        events.extend(caption_events("@" + str(tk.get('creator', '')) + " on TikTok", t0, tk_d))
         t0 += tk_d
 
 
@@ -1897,23 +1936,29 @@ if (USE_HF_AUDIO or EL_KEY) and plan.get("sfx", True):
     except Exception as e:
         print("Loudness boost skipped:", e)
 
-margin = int(H * (0.28 if vertical else 0.1))
-ass = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {W}
-PlayResY: {H}
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Cap,DejaVu Sans,{fs},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,1,0,0,0,100,100,0,0,1,6,3,2,60,60,{margin},1
-Style: Hook,DejaVu Sans,{int(H * 0.075)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,1,0,0,0,100,100,0,0,1,5,2,8,40,40,{int(H * 0.06)},1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-""" + "\n".join(events) + "\n"
+ass = caption_ass(events)
 open(os.path.join(work, "subs.ass"), "w", encoding="utf-8").write(ass)
 
-# brand frame (orange border, channel name, flag) overlaid on the whole video when present
+def compact_brand_frame(source):
+    """Keep the classic channel mark below captions, not over presentation headings."""
+    im = source.convert("RGBA")
+    if frame != "classic":
+        return im.resize((W, H), Image.LANCZOS)
+    # The bundled classic artwork consists of the upper-left channel-name lockup.
+    mark = im.crop((0, 0, int(im.width * 0.68), int(im.height * 0.16)))
+    bounds = mark.getchannel("A").point(lambda a: 255 if a >= 80 else 0).getbbox()
+    if not bounds:
+        return Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    mark = mark.crop(bounds)
+    mark.thumbnail((int(W * (0.42 if vertical else 0.25)), int(H * 0.045)), Image.LANCZOS)
+    im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    pad = max(4, int(8 * U))
+    x, y = int(W * 0.965) - mark.width, int(H * 0.97) - mark.height
+    ImageDraw.Draw(im).rounded_rectangle((x - pad, y - pad, x + mark.width + pad, y + mark.height + pad), radius=pad, fill=(9, 18, 27, 150))
+    im.alpha_composite(mark, (x, y))
+    return im
+
+# Brand artwork is composed in a dedicated safe area, separately from graphics.
 frame = str(plan.get("frame") or "classic")
 ov = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"frame_{frame}.png")
 fcolor = str(plan.get("frame_color") or "").lstrip("#")
@@ -1934,6 +1979,10 @@ if frame != "none" and os.path.exists(ov) and len(fcolor) == 6:
                 nr, ng, nb = colorsys.hsv_to_rgb(th, ts, v)
                 px[xx, yy] = (int(nr * 255), int(ng * 255), int(nb * 255), a)
     ov = os.path.join(work, "frame_colored.png")
+    im.save(ov)
+if frame != "none" and os.path.exists(ov):
+    im = compact_brand_frame(Image.open(ov))
+    ov = os.path.join(work, "frame_safe.png")
     im.save(ov)
 # Overlays written straight onto the footage (no white card):
 #  - AI pictures (switch on): up to 20 photoreal 1K pictures spread across the video, shown full screen for
