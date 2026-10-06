@@ -1,4 +1,4 @@
-"""stock-engine v82 (installed by Studio)
+"""stock-engine v85 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -563,29 +563,66 @@ def ease(p):
     return 1 - (1 - p) ** 3
 
 
+# Each presentation preset gets its own backdrop so templates never look alike.
+PV = int(plan.get("presentation_variant") or 0) % 3
+PV_BG = [
+    {"blue": ((18, 52, 160), (2, 8, 44)), "dark": ((22, 40, 110), (2, 6, 30))},     # prices: deep navy
+    {"blue": ((70, 46, 30), (10, 8, 8)), "dark": ((62, 60, 66), (6, 6, 8))},        # comparisons: graphite + amber
+    {"blue": ((18, 70, 72), (2, 14, 18)), "dark": ((58, 22, 30), (10, 4, 8))},      # informative: ink teal / burgundy
+][PV]
+
+
 def radial(c1, c2):
-    sm = Image.new("RGB", (48, 48))
-    for y in range(48):
-        for x in range(48):
-            d = min(1.0, math.hypot(x - 24, y - 24) / 34)
-            sm.putpixel((x, y), tuple(int(c1[k] * (1 - d) + c2[k] * d) for k in range(3)))
+    for k_, v_ in BG.items():
+        if (c1, c2) == v_ and k_ in PV_BG:
+            c1, c2 = PV_BG[k_]
+    S = 192
+    sm = Image.new("RGB", (S, S))
+    cx, cy = (S * 0.5, S * 0.5) if PV == 0 else ((S * 0.25, S * 0.3) if PV == 1 else (S * 0.7, S * 0.2))
+    px = sm.load()
+    for y in range(S):
+        for x in range(S):
+            d = min(1.0, math.hypot(x - cx, y - cy) / (S * 0.75))
+            d = d * d * (3 - 2 * d)
+            px[x, y] = tuple(int(c1[k] * (1 - d) + c2[k] * d) for k in range(3))
+    im = sm.resize((W, H), Image.LANCZOS)
+    # Fine grain removes gradient banding for a cleaner, premium look.
+    try:
+        im = Image.blend(im, Image.effect_noise((W, H), 14).convert("RGB"), 0.035)
+    except Exception:
+        pass
+    im = im.convert("RGBA")
     # Semi-transparent tint: graphics sit on top of (darkened) footage, never a solid background.
-    im = sm.resize((W, H), Image.BICUBIC).convert("RGBA")
-    im.putalpha(95)
+    im.putalpha(105)
     return im
 
 
 def grid(img, t, alpha=80):
     ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(ov)
-    step = int(135 * U)
-    off = int((t * 40) % step)
-    for x in range(-step, W + step, step):
-        pts = [(x + off + 4 * math.sin(y / 140 + t * 2), y) for y in range(0, H + 40, 40)]
-        d.line(pts, fill=(255, 255, 255, alpha), width=max(2, int(3 * U)))
-    for y in range(-step, H + step, step):
-        pts = [(x, y + off + 4 * math.sin(x / 140 + t * 2)) for x in range(0, W + 40, 40)]
-        d.line(pts, fill=(255, 255, 255, alpha), width=max(2, int(3 * U)))
+    if PV == 0:
+        # prices: drifting dot matrix
+        step = int(54 * U)
+        off = int((t * 18) % step)
+        r = max(1.5, 2.6 * U)
+        for y in range(-step, H + step, step):
+            for x in range(-step, W + step, step):
+                a = int(alpha * (0.55 + 0.45 * math.sin(x / 260 + y / 310 + t * 1.2)))
+                d.ellipse([x + off - r, y - r, x + off + r, y + r], fill=(170, 200, 255, max(0, a)))
+    elif PV == 1:
+        # comparisons: slow diagonal light bands
+        step = int(220 * U)
+        off = (t * 30) % step
+        for k in range(-H // step - 2, W // step + 3):
+            x = k * step + off
+            d.polygon([(x, H), (x + 60 * U, H), (x + 60 * U + H * 0.6, 0), (x + H * 0.6, 0)], fill=(255, 190, 120, int(alpha * 0.35)))
+    else:
+        # informative: editorial ruled lines with a margin rule
+        step = int(64 * U)
+        off = int((t * 10) % step)
+        for y in range(-step, H + step, step):
+            d.line([(0, y + off), (W, y + off)], fill=(255, 255, 255, int(alpha * 0.6)), width=max(1, int(1.5 * U)))
+        d.line([(W * 0.055, 0), (W * 0.055, H)], fill=(230, 120, 100, int(alpha * 1.4)), width=max(2, int(3 * U)))
     img.alpha_composite(ov)
 
 
@@ -939,6 +976,31 @@ def ctext(d, text, f, cx, y, fill):
     d.text((cx - f.getlength(text) / 2, y), text, font=f, fill=fill)
 
 
+def fit_lines(text, path, size, maxw, maxl=3, minsize=18):
+    # Shrink font, then wrap, so a label never exceeds its column width.
+    s = size
+    while True:
+        f = Fnt(path, s)
+        words = (text or "").split()
+        if s <= minsize or (len(wrap(text, f, maxw, 99)) <= maxl and all(f.getlength(w_) <= maxw for w_ in words)):
+            lines = wrap(text, f, maxw, maxl)
+            if len(wrap(text, f, maxw, 99)) > maxl and lines:
+                ln = lines[-1]
+                while ln and f.getlength(ln + "…") > maxw:
+                    ln = ln[:-1]
+                lines[-1] = ln.rstrip() + "…"
+            return f, lines
+        s = int(s * 0.9)
+
+
+def ctext_block(d, text, path, size, cx, y, maxw, fill, maxl=3, up=False):
+    f, lines = fit_lines(text, path, size, maxw, maxl)
+    lh = f.size * 1.15
+    y0 = y - (len(lines) - 1) * lh if up else y
+    for j, ln in enumerate(lines):
+        ctext(d, ln, f, cx, y0 + j * lh, fill)
+
+
 def kv(s):
     if ":" in s:
         a_, b_ = s.split(":", 1)
@@ -1108,9 +1170,13 @@ def frame_timeline(v, t, p, cache):
         x = x0 + (x1 - x0) * (k + 0.5) / n
         r = 22 * U * (0.5 + 0.5 * g)
         d.ellipse([x - r, y - r, x + r, y + r], fill=ACC, outline=(255, 255, 255), width=max(2, int(4 * U)))
-        ctext(d, a_, yf, x, y - 110 * U - (1 - g) * 30 * U, (235, 200, 180, int(255 * g)))
+        colw = (x1 - x0) / n * 0.9
+        if "tl_vs" not in cache:
+            bs = 66 * U if n <= 3 else 48 * U
+            cache["tl_vs"] = min([fit_lines(bb, FB, bs, colw, 3)[0].size for _, bb in items if bb] or [bs])
+        ctext_block(d, a_, FB, 56 * U, x, y - 110 * U - (1 - g) * 30 * U, colw, (235, 200, 180, int(255 * g)), 2, up=True)
         if b_:
-            ctext(d, b_, vf, x, y + 50 * U + (1 - g) * 30 * U, (255, 255, 255, int(255 * g)))
+            ctext_block(d, b_, FB, cache["tl_vs"], x, y + 50 * U + (1 - g) * 30 * U, colw, (255, 255, 255, int(255 * g)), 3)
     return img
 
 
@@ -1951,6 +2017,45 @@ if plan.get("data_callouts", True):
         cp = os.path.join(work, f"data{data_n}.png"); im.save(cp); data_n += 1
         card_inputs.append(cp); card_filters.append((s0, s1, "text")); last_end = s1
     print("Data callouts:", data_n)
+# Animated topic icons: small photorealistic cut-outs of the exact thing spoken (egg, gas pump...).
+# Owner's OpenAI key only, low quality, max 10 per video, same subject reused for free; skipped on any error.
+icon_n = 0
+if plan.get("topic_icons") and OPENAI:
+    icon_cache, icon_paid, last_end = {}, 0, -99.0
+    for (i, st, d, g) in card_spans:
+        if icon_paid >= 10 or AI_IMAGE_BLOCKED: break
+        if i < 1 or d < 2.5: continue
+        sc = plan["scenes"][i]
+        subject = " ".join(str(sc.get("subject") or sc.get("query") or "").split()[:4]).strip()
+        if not subject: continue
+        s0 = st + 0.3; s1 = min(st + d - 0.2, s0 + 4.0)
+        if s1 - s0 < 2 or s0 < last_end + 5: continue
+        key = subject.lower()
+        if key not in icon_cache:
+            try:
+                import io
+                ro = requests.post("https://api.openai.com/v1/images/generations",
+                                   headers={"Authorization": f"Bearer {OPENAI}", "Content-Type": "application/json"},
+                                   json={"model": IMG_MODEL, "prompt": "Single photorealistic product-style cut-out of exactly: " + subject +
+                                         ". Real camera photo look, centered, soft studio light, isolated object, transparent background. "
+                                         "No text, letters, logos, people, cartoons, anime, illustration or 3D render.",
+                                         "size": "1024x1024", "quality": "low", "background": "transparent", "output_format": "png", "n": 1}, timeout=300)
+                ro.raise_for_status()
+                icon_cache[key] = Image.open(io.BytesIO(base64.b64decode(ro.json()["data"][0]["b64_json"]))).convert("RGBA")
+                icon_paid += 1; AI_SPENT += 1
+            except Exception as e:
+                print("Topic icon skipped:", str(e)[:200])
+                if isinstance(e, requests.HTTPError): AI_IMAGE_BLOCKED = True
+                continue
+        ic = icon_cache[key]; sz = int(min(W, H) * 0.26)
+        ic = ic.resize((sz, sz), Image.Resampling.LANCZOS)
+        im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        glow = Image.new("RGBA", (sz, sz), (0, 0, 0, 0)); ImageDraw.Draw(glow).ellipse([sz * 0.08, sz * 0.08, sz * 0.92, sz * 0.92], fill=(255, 255, 255, 60))
+        x, y = W - sz - int(W * 0.05), int(H * 0.08)
+        im.alpha_composite(glow, (x, y)); im.alpha_composite(ic, (x, y))
+        cp = os.path.join(work, f"icon{icon_n}.png"); im.save(cp); icon_n += 1
+        card_inputs.append(cp); card_filters.append((s0, s1, "icon")); last_end = s1
+print("Topic icons:", icon_n)
 
 def card_chain(src, first_idx):
     # full-screen AI pictures fade in/out; data callouts fade over the footage
