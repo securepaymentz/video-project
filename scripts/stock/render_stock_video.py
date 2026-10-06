@@ -1,4 +1,4 @@
-"""stock-engine v91 (installed by Studio)
+"""stock-engine v95 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1401,17 +1401,15 @@ def render_visual(v, d, seg, i):
             has_bg = make_scene_footage(i, v.get("query"), d + 0.1, bg)
         except Exception as e:
             print("Selected presentation background unavailable:", e)
-    tries = [] if (MY_CLIPS or has_bg or v.get("_nobg")) else [v.get("query"), SCENE_SUBJECT]
-    for q_ in [x for x in tries if x]:
-        try:
-            if make_footage(i, q_, d + 0.1, bg, False) or make_footage(i, q_, d + 0.1, bg, True):
-                has_bg = True; break
-        except Exception as e:
-            print("Graphic background footage failed:", e)
+    # Missing selected media never stops the video: search exact-subject stock,
+    # then reuse an approved clip, then the last matching background.
+    if not has_bg:
+        has_bg = fill_background(i, v.get("query"), d + 0.1, bg)
     if has_bg:
         bg_in = ["-i", bg]
-    else:
-        raise RuntimeError(f"Scene {i + 1} needs a matching photo or video background. Add a clip showing its subject and retry; image-free presentations are not allowed.")
+        remember_footage(bg)
+    elif not emergency_background(i, v.get("query"), d + 0.1, bg):
+        raise RuntimeError(f"Scene {i + 1}: no photo or video could be downloaded at all (stock sites unreachable). Retry in a few minutes.")
     fc = (f"[0:v]scale={W}:{H},setsar=1,colorlevels=romax=0.92:gomax=0.92:bomax=0.92[b];"
           f"[1:v]format=rgba,tpad=stop_mode=clone:stop_duration={hold + 0.1:.2f}[g];"
           f"[b][g]overlay=0:0:format=auto,fps=30,format=yuv420p[o]")
@@ -1423,6 +1421,124 @@ def render_visual(v, d, seg, i):
 MY_CLIPS = [c for c in (plan.get("my_clips") or []) if isinstance(c, dict) and c.get("url")]
 CUR_CLIP = None
 SCENE_CLIPS = []
+LAST_FOOTAGE = None
+REUSE_TURN = 0
+
+
+def remember_footage(path):
+    global LAST_FOOTAGE
+    if path and os.path.exists(path):
+        LAST_FOOTAGE = path
+
+
+def stock_footage(i, q, d, seg):
+    """Exact-subject stock search, used when the selected clips run out (long videos)."""
+    for q_ in [x for x in (q, SCENE_SUBJECT, plan.get("fallback_query")) if x]:
+        for photo in (False, True):
+            try:
+                if search_footage(i, q_, d, seg, photo):
+                    return True
+            except Exception as e:
+                print("Stock fill skipped:", e)
+    return False
+
+
+def reuse_selected(i, q, d, seg):
+    """Verified reuse of the owner's approved clips for this video (rotating, not the previous one)."""
+    global REUSE_TURN
+    if not MY_CLIPS:
+        return False
+    avoid = (CUR_CLIP or {}).get("url")
+    pool = [c for c in MY_CLIPS if c.get("url") != avoid] or MY_CLIPS
+    for k in range(len(pool)):
+        clip = pool[(REUSE_TURN + k) % len(pool)]
+        try:
+            if use_my_clip(i * 100 + 77 + k, d, seg, clip):
+                REUSE_TURN += k + 1
+                return True
+        except Exception as e:
+            print("Reuse skipped:", e)
+    return False
+
+
+def reuse_last(i, q, d, seg):
+    if not LAST_FOOTAGE or not os.path.exists(LAST_FOOTAGE):
+        return False
+    F = max(1, int(d * 30))
+    zp = f"zoompan=z='min(1.08+0.0009*on,1.2)':x='(iw-iw/zoom)*on/{F}':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
+    run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", LAST_FOOTAGE, "-t", f"{d:.2f}", "-an", "-vf", zp,
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
+    return True
+
+
+def fallback_visual(text, subject=None):
+    """Narration-only presentation (never invents numbers): a spoken figure becomes a stat, else a title."""
+    m = re.search(r"\$\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:million|billion|trillion))?|\b\d+(?:\.\d+)?\s?(?:%|percent)", text, re.I)
+    head = " ".join(((subject or "").strip() or re.split(r"[.!?]", text)[0] or text).split()[:7])[:60].upper()
+    return {"type": "stat", "headline": head, "value": m.group(0), "color": "dark"} if m else {"type": "title", "headline": head, "color": "dark"}
+
+
+def fill_background(i, q, d, seg):
+    """Never fail a scene for missing media: stock -> approved reuse -> last matching footage."""
+    for step in (stock_footage, reuse_selected, reuse_last):
+        try:
+            if step(i, q, d, seg):
+                print(f"Scene {i + 1} background filled by {step.__name__}")
+                return True
+        except Exception as e:
+            print(f"{step.__name__} failed:", e)
+    return False
+
+
+def emergency_background(i, q, d, seg):
+    """Last resort when every download fails (stock sites down): an authorized AI photo
+    of the exact subject, else a locally rendered styled presentation backdrop.
+    The scene's graphic/captions draw on top, so the video always finishes."""
+    global AI_SPENT
+    # Paid AI photo only when the owner authorized category images and budget remains.
+    if (plan.get("category_images") or plan.get("ai_presentations")) and AI_SPENT < plan.get("image_budget", 20):
+        try:
+            subject = (SCENE_SUBJECT or q or plan.get("title") or "the topic").strip()
+            img = gen_ai_image(f"Photorealistic editorial photo of {subject}, United States setting", "1536x1024")
+            p = os.path.join(work, f"emg{i}.jpg")
+            img.save(p, quality=88)
+            AI_SPENT += 1
+            F = max(1, int(d * 30))
+            zp = f"zoompan=z='min(1.06+0.0009*on,1.2)':x='(iw-iw/zoom)*on/{F}':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
+            run(["ffmpeg", "-y", "-loop", "1", "-i", p, "-t", f"{d:.2f}", "-vf", zp,
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
+            print(f"Scene {i + 1} background: emergency AI photo")
+            return True
+        except Exception as e:
+            print("Emergency AI photo skipped:", e)
+    # Free local backdrop: dark diagonal gradient with soft glow, styled like the presentations.
+    try:
+        base = Image.new("RGB", (W, H))
+        px = base.load()
+        c1, c2 = (14, 22, 38), (38, 30, 18)
+        for y in range(H):
+            for x in range(0, W, 4):
+                t = (x / W + y / H) / 2
+                col = tuple(int(c1[k] + (c2[k] - c1[k]) * t) for k in range(3))
+                for dx in range(4):
+                    if x + dx < W: px[x + dx, y] = col
+        glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+        gd.ellipse((W * 0.55, -H * 0.25, W * 1.25, H * 0.45), fill=(255, 150, 60, 46))
+        gd.ellipse((-W * 0.3, H * 0.6, W * 0.45, H * 1.3), fill=(60, 120, 255, 36))
+        base = Image.alpha_composite(base.convert("RGBA"), glow).convert("RGB")
+        p = os.path.join(work, f"emg{i}.jpg")
+        base.save(p, quality=88)
+        F = max(1, int(d * 30))
+        zp = f"zoompan=z='min(1.04+0.0008*on,1.15)':x='(iw-iw/zoom)*on/{F}':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
+        run(["ffmpeg", "-y", "-loop", "1", "-i", p, "-t", f"{d:.2f}", "-vf", zp,
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
+        print(f"Scene {i + 1} background: local styled backdrop")
+        return True
+    except Exception as e:
+        print("Emergency backdrop failed:", e)
+    return False
+
 
 
 def download_retry(url, path, tries=5):
@@ -1477,13 +1593,13 @@ def make_scene_footage(i, q, d, seg, want_photo=False):
         return make_footage(i, q, d, seg, want_photo)
     chosen = SCENE_CLIPS or ([CUR_CLIP] if CUR_CLIP else [])
     if not chosen:
-        return False
+        return fill_background(i, q, d, seg)
     if len(chosen) == 1:
         try:
             return use_my_clip(i, d, seg, chosen[0])
         except Exception as e:
-            print("Approved clip unavailable after retries; using presentation instead:", e)
-            return False
+            print("Approved clip unavailable after retries; filling instead:", e)
+            return fill_background(i, q, d, seg)
     parts = []
     for k, clip in enumerate(chosen):
         part = os.path.join(work, f"selected{i}_{k}_{int(d * 100)}.mp4")
@@ -1493,7 +1609,7 @@ def make_scene_footage(i, q, d, seg, want_photo=False):
         except Exception as e:
             print("Skipping unavailable clip:", e)
     if not parts:
-        return False
+        return fill_background(i, q, d, seg)
     if len(parts) == 1:
         run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", parts[0], "-t", f"{d:.2f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
         return True
@@ -1509,14 +1625,17 @@ def make_footage(i, q, d, seg, want_photo):
     """Fast-cut real footage for d seconds (clips first, photo as backup). Returns False if nothing fits."""
     if MY_CLIPS:
         clip = CUR_CLIP if (CUR_CLIP and i < 900) else None
-        if not clip:
-            print("No approved clip assigned to scene", i)
-            return False
-        try:
-            return use_my_clip(i, d, seg, clip)
-        except Exception as e:
-            print("Picked clip failed; not substituting unrelated footage:", e)
-            return False
+        if clip:
+            try:
+                return use_my_clip(i, d, seg, clip)
+            except Exception as e:
+                print("Picked clip failed; searching exact-subject stock:", e)
+        else:
+            print("No approved clip for scene", i, "- searching exact-subject stock")
+    return search_footage(i, q, d, seg, want_photo)
+
+
+def search_footage(i, q, d, seg, want_photo):
     vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1"
     link, author = (None, None) if want_photo else find_clip(q, d)
     if not link and i < 3:
@@ -1578,7 +1697,7 @@ def make_footage(i, q, d, seg, want_photo):
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
             return True
     if want_photo:
-        return make_footage(i, q, d, seg, False)
+        return search_footage(i, q, d, seg, False)
     return False
 
 
@@ -1743,6 +1862,9 @@ for i, sc in enumerate(plan["scenes"]):
     SCENE_CLIPS = [c for c in sc.get("clips", []) if isinstance(c, dict) and c.get("url")] or ([CUR_CLIP] if CUR_CLIP else [])
     presentation_only = bool(sc.get("presentationOnly"))
     vis = sc.get("visual")
+    if not vis and MY_CLIPS and not SCENE_CLIPS:
+        # No selected clip: show a presentation over a matching background image instead of bare footage.
+        vis = fallback_visual(text, sc.get("subject"))
     done = False
     if vis:
         gfx_starts.append(t0)
@@ -1785,7 +1907,7 @@ for i, sc in enumerate(plan["scenes"]):
                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
                 done = True
     if presentation_only and not done:
-        raise RuntimeError(f"Could not render presentation for scene {i}; refusing to use unrelated footage")
+        done = fill_background(i, q, d, seg)
     if not done:
         done = make_scene_footage(i, q, d, seg, UNSPLASH and i >= 3 and i % 3 == 2)
     if not done and SCENE_SUBJECT and SCENE_SUBJECT != q.lower():
@@ -1807,7 +1929,13 @@ for i, sc in enumerate(plan["scenes"]):
             if done:
                 break
     if not done:
-        raise RuntimeError(f"Scene {i + 1} needs a matching photo or video. Add an exact-subject clip and retry; refusing an image-free or unrelated background.")
+        done = fill_background(i, q, d, seg)
+    if not done:
+        done = emergency_background(i, q, d, seg)
+    if not done:
+        raise RuntimeError(f"Scene {i + 1}: no photo or video could be downloaded at all (stock sites unreachable). Retry in a few minutes.")
+    if not vis:
+        remember_footage(seg)
     pad = os.path.join(work, f"p{i}.wav")
     run(["ffmpeg", "-y", "-i", a, "-af", f"apad=whole_dur={d:.2f}", "-t", f"{d:.2f}", "-ar", "44100", "-ac", "2", pad])
     segments.append(seg); audios.append(pad)
@@ -2101,11 +2229,12 @@ if plan.get("topic_icons") and OPENAI:
                 print("Topic icon skipped:", str(e)[:200])
                 if isinstance(e, requests.HTTPError): AI_IMAGE_BLOCKED = True
                 continue
-        ic = icon_cache[key]; sz = int(min(W, H) * 0.26)
+        ic = icon_cache[key]; sz = int(min(W, H) * 0.18)
         ic = ic.resize((sz, sz), Image.Resampling.LANCZOS)
         im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         glow = Image.new("RGBA", (sz, sz), (0, 0, 0, 0)); ImageDraw.Draw(glow).ellipse([sz * 0.08, sz * 0.08, sz * 0.92, sz * 0.92], fill=(255, 255, 255, 60))
-        x, y = W - sz - int(W * 0.05), int(H * 0.08)
+        # bottom-left, just above the caption band: never over headings, captions or the bottom-right logo
+        x, y = int(W * 0.04), int(H * 0.77) - sz
         im.alpha_composite(glow, (x, y)); im.alpha_composite(ic, (x, y))
         cp = os.path.join(work, f"icon{icon_n}.png"); im.save(cp); icon_n += 1
         card_inputs.append(cp); card_filters.append((s0, s1, "icon")); last_end = s1
