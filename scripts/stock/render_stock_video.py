@@ -1,4 +1,4 @@
-"""stock-engine v77 (installed by Studio)
+"""stock-engine v80 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1457,95 +1457,7 @@ intro_seg = intro_aud = None
 intro_d = 0.0
 reporter_prompt = str(plan.get("reporter_prompt") or "").strip()
 hook_line = str(plan.get("hook") or "").strip()
-# ---- HeyGen Avatar IV reporter (preferred): one of the saved transparent reporters, rotated per video, over a photo of the exact topic ----
-HG_KEY = os.environ.get("HEYGEN_API_KEY", "").strip()
-HG_LOOKS = [a.strip() for a in os.environ.get("HEYGEN_AVATAR_IDS", "").split(",") if a.strip()] or [a for a in [os.environ.get("HEYGEN_AVATAR_ID", "").strip()] if a]
-if HG_KEY and HG_LOOKS and plan.get("reporter_on", True):
-    try:
-        import time
-        hh = {"X-Api-Key": HG_KEY, "Content-Type": "application/json"}
-        vid = os.environ.get("HEYGEN_VOICE_ID", "").strip()
-        if not vid:
-            vs = requests.get("https://api.heygen.com/v2/voices", headers=hh, timeout=60).json().get("data", {}).get("voices", [])
-            en = [v for v in vs if str(v.get("language", "")).lower().startswith("english")]
-            us = [v for v in en if "american" in str(v.get("language", "")).lower() or "en-us" in str(v.get("locale", "")).lower()] or en
-            vid = ([v for v in us if str(v.get("gender", "")).lower() == "male"] or us or vs)[0]["voice_id"]
-        look = random.choice(HG_LOOKS)
-        sc0 = (plan.get("scenes") or [{}])[0]
-        bg_url, _a = find_photo(str(sc0.get("query") or plan.get("fallback_query") or "american city"))
-        vin = {"character": {"type": "talking_photo", "talking_photo_id": look, "use_avatar_iv_model": True, "talking_style": "expressive"},
-               "voice": {"type": "text", "input_text": (hook_line or "Here is what is really happening.")[:200], "voice_id": vid}}
-        if bg_url:
-            vin["background"] = {"type": "image", "url": bg_url}
-        dim = {"width": 720, "height": 1280} if vertical else {"width": 1280, "height": 720}
-        r = requests.post("https://api.heygen.com/v2/video/generate", headers=hh, json={"video_inputs": [vin], "dimension": dim}, timeout=60)
-        if r.status_code >= 400:
-            raise RuntimeError(f"HeyGen {r.status_code}: {r.text[:300]}")
-        hg_id = r.json()["data"]["video_id"]
-        hg_url = None
-        for _ in range(90):  # up to ~15 min
-            time.sleep(10)
-            st = requests.get(f"https://api.heygen.com/v1/video_status.get?video_id={hg_id}", headers=hh, timeout=60).json().get("data", {})
-            if st.get("status") == "completed":
-                hg_url = st.get("video_url"); break
-            if st.get("status") == "failed":
-                raise RuntimeError(f"HeyGen failed: {st.get('error')}")
-        if not hg_url:
-            raise RuntimeError("HeyGen took too long")
-        rawh = os.path.join(work, "heygen_raw.mp4")
-        open(rawh, "wb").write(requests.get(hg_url, timeout=180).content)
-        seg = os.path.join(work, "heygen.mp4")
-        run(["ffmpeg", "-y", "-i", rawh, "-an", "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1",
-             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
-        aud = os.path.join(work, "heygen.wav")
-        run(["ffmpeg", "-y", "-i", rawh, "-vn", "-ar", "44100", "-ac", "2", aud])
-        intro_seg, intro_aud = seg, aud
-        intro_d = min(duration(seg), duration(aud))
-        reporter_seg, reporter_aud, reporter_d = intro_seg, intro_aud, intro_d
-        print(f"HeyGen Avatar IV reporter ready ({intro_d:.1f}s), look {look}")
-    except Exception as e:
-        print("HeyGen reporter skipped, trying Lovable opener:", e)
-        reporter_seg = None
-if reporter_seg is None and LV_KEY and reporter_prompt and plan.get("reporter_on", True):
-    try:
-        import time
-        lh = {"Authorization": f"Bearer {LV_KEY}", "Content-Type": "application/json"}
-        body = {
-            "model": "google/gemini-omni-1.1-flash",
-            "input": reporter_prompt + " A middle-aged American male news reporter stands on this exact set and speaks directly to the camera in clear American English with a confident broadcast delivery, saying exactly: \"" + (hook_line or "Here is what is really happening.") + "\" Photorealistic, natural lip-sync, single continuous medium shot, no scene cuts, no on-screen text, no other people talking.",
-            "response_format": {"type": "video", "resolution": "1080p", "duration": "5s", "aspect_ratio": "9:16" if vertical else "16:9"},
-        }
-        r = requests.post("https://ai.gateway.lovable.dev/v1/videos", headers=lh, json=body, timeout=120)
-        r.raise_for_status()
-        lv_id = r.json()["id"]
-        dl = None
-        for _ in range(60):  # up to ~8 min
-            time.sleep(8)
-            st = requests.get(f"https://ai.gateway.lovable.dev/v1/videos/{lv_id}", headers=lh, timeout=60).json()
-            if st.get("status") == "completed":
-                dl = requests.get(f"https://ai.gateway.lovable.dev/v1/videos/{lv_id}/content", headers=lh, timeout=300).content
-                break
-            if st.get("status") == "failed":
-                raise RuntimeError(f"Opener generation failed: {st.get('error')}")
-        if not dl:
-            raise RuntimeError("Opener took too long")
-        rawo = os.path.join(work, "opener_raw.mp4")
-        open(rawo, "wb").write(dl)
-        seg = os.path.join(work, "opener.mp4")
-        run(["ffmpeg", "-y", "-i", rawo, "-an", "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1",
-             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
-        aud = os.path.join(work, "opener.wav")
-        try:
-            run(["ffmpeg", "-y", "-i", rawo, "-vn", "-ar", "44100", "-ac", "2", aud])
-        except Exception:
-            run(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "5", aud])
-        intro_seg, intro_aud = seg, aud
-        intro_d = min(duration(seg), duration(aud))
-        reporter_seg, reporter_aud, reporter_d = intro_seg, intro_aud, intro_d
-        print(f"Lovable opener ready ({intro_d:.1f}s)")
-    except Exception as e:
-        print("Opener skipped:", e)
-        reporter_seg = None
+# Reporter/AI opener disabled: videos open directly with the first moving stock clip (scene-0 swap below).
 
 n_sc = len(plan["scenes"])
 
@@ -1769,7 +1681,7 @@ for i, sc in enumerate(plan["scenes"]):
         if not render_visual({"type": "title", "headline": headline, "color": "dark", "_nobg": True}, d, seg, i):
             raise RuntimeError(f"Could not render scene {i} without unrelated stock")
     pad = os.path.join(work, f"p{i}.wav")
-    run(["ffmpeg", "-y", "-i", a, "-af", "apad=pad_dur=0.25", "-t", f"{d:.2f}", "-ar", "44100", "-ac", "2", pad])
+    run(["ffmpeg", "-y", "-i", a, "-af", f"apad=whole_dur={d:.2f}", "-t", f"{d:.2f}", "-ar", "44100", "-ac", "2", pad])
     segments.append(seg); audios.append(pad)
     # subtitles: chunks of ~4 words timed by word count
     scene_words = text.split()
@@ -1795,8 +1707,14 @@ with open(os.path.join(work, "v.txt"), "w") as f:
     f.writelines(f"file '{s}'\n" for s in segments)
 with open(os.path.join(work, "a.txt"), "w") as f:
     f.writelines(f"file '{s}'\n" for s in audios)
-run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", os.path.join(work, "v.txt"), "-c", "copy", os.path.join(work, "video.mp4")])
+# Re-encode (not -c copy): segments come from different sources (HeyGen, photos, stock clips)
+# with different timebases, and a stream-copy concat can produce broken timestamps that make
+# the joined video shorter than the sum of its scenes.
+run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", os.path.join(work, "v.txt"),
+     "-vf", "fps=30,setsar=1", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+     os.path.join(work, "video.mp4")])
 run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", os.path.join(work, "a.txt"), os.path.join(work, "voice.wav")])
+print(f"Joined video: {duration(os.path.join(work, 'video.mp4')):.1f}s, voice: {duration(os.path.join(work, 'voice.wav')):.1f}s, expected {t0:.1f}s")
 
 
 # Background music + transition sound effects (ElevenLabs). Any failure keeps the plain voice track.
