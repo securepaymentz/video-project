@@ -1,4 +1,4 @@
-"""stock-engine v95 (installed by Studio)
+"""stock-engine v98 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -422,6 +422,9 @@ def clip_rank(query, items, thumb):
 
 
 def find_photo(query):
+    # Owner picked clips: ONLY their media (plus authorized ChatGPT art) — never other stock.
+    if plan.get("my_clips"):
+        return None, None
     srcs = [f for f, k in ((find_unsplash, UNSPLASH), (find_pixabay_photo, PIXABAY)) if k]
     random.shuffle(srcs)
     for f in srcs:
@@ -505,6 +508,9 @@ def find_pixabay(query, need):
 
 
 def find_clip(query, need):
+    # Owner picked clips: ONLY their media (plus authorized ChatGPT art) — never other stock.
+    if plan.get("my_clips"):
+        return None, None
     link, author = find_pixabay(query, need)
     if link or not PEXELS:
         return link, author
@@ -1449,7 +1455,15 @@ def reuse_selected(i, q, d, seg):
     if not MY_CLIPS:
         return False
     avoid = (CUR_CLIP or {}).get("url")
-    pool = [c for c in MY_CLIPS if c.get("url") != avoid] or MY_CLIPS
+    # Only reuse clips about THIS scene's subject (gas talk -> gas clips, never a grocery clip).
+    stop = {"the", "and", "for", "with", "price", "prices", "near", "today", "usa", "us", "of", "in", "a", "to"}
+    words = lambda t: {w for w in re.findall(r"[a-z]{3,}", str(t or "").lower()) if w not in stop}
+    want = words(" ".join([str(q or ""), SCENE_SUBJECT or ""]))
+    scored = [(len(want & words(" ".join(str(c.get(k, "")) for k in ("label", "query", "subject", "alt")))), c) for c in MY_CLIPS]
+    pool = [c for n, c in sorted(scored, key=lambda x: -x[0]) if n > 0 and c.get("url") != avoid] or [c for n, c in scored if n > 0]
+    if not pool:
+        print("No selected clip matches", sorted(want), "- skipping unrelated reuse")
+        return False
     for k in range(len(pool)):
         clip = pool[(REUSE_TURN + k) % len(pool)]
         try:
@@ -1479,8 +1493,8 @@ def fallback_visual(text, subject=None):
 
 
 def fill_background(i, q, d, seg):
-    """Never fail a scene for missing media: stock -> approved reuse -> last matching footage."""
-    for step in (stock_footage, reuse_selected, reuse_last):
+    """Never fail a scene for missing media: approved reuse first when the owner picked clips, else stock."""
+    for step in ((reuse_selected, reuse_last) if MY_CLIPS else (stock_footage, reuse_selected, reuse_last)):
         try:
             if step(i, q, d, seg):
                 print(f"Scene {i + 1} background filled by {step.__name__}")
@@ -2072,17 +2086,28 @@ def compact_brand_frame(source):
     im = source.convert("RGBA")
     if frame != "classic":
         return im.resize((W, H), Image.LANCZOS)
-    # The bundled classic artwork consists of the upper-left channel-name lockup.
-    mark = im.crop((0, 0, int(im.width * 0.68), int(im.height * 0.16)))
-    bounds = mark.getchannel("A").point(lambda a: 255 if a >= 80 else 0).getbbox()
+    # Keep only the white channel-name lettering (drop the artwork's big dark bar), then
+    # draw a tight, evenly padded pill sized from the video's short side (wide and Shorts).
+    area = im.crop((0, 0, int(im.width * 0.75), int(im.height * 0.25)))
+    # Lettering = colored (brand) or bright pixels; the gray shadow gradient is ignored.
+    from PIL import ImageChops
+    rgb = area.convert("RGB"); r_, g_, b_ = rgb.split()
+    hi = ImageChops.lighter(ImageChops.lighter(r_, g_), b_); lo = ImageChops.darker(ImageChops.darker(r_, g_), b_)
+    colored = ImageChops.subtract(hi, lo).point(lambda v: 255 if v >= 60 else 0)
+    bright = lo.point(lambda v: 255 if v >= 215 else 0)
+    solid = area.getchannel("A").point(lambda a: 255 if a >= 200 else 0)
+    m = ImageChops.multiply(ImageChops.lighter(colored, bright), solid)
+    bounds = m.getbbox()
     if not bounds:
         return Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    mark = mark.crop(bounds)
-    mark.thumbnail((int(W * (0.42 if vertical else 0.25)), int(H * 0.045)), Image.LANCZOS)
+    mark = rgb.crop(bounds).convert("RGBA"); mark.putalpha(m.crop(bounds))
+    short = min(W, H)
+    mark.thumbnail((int(W * (0.46 if vertical else 0.24)), int(short * 0.032)), Image.LANCZOS)
     im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    pad = max(4, int(8 * U))
-    x, y = int(W * 0.965) - mark.width, int(H * 0.97) - mark.height
-    ImageDraw.Draw(im).rounded_rectangle((x - pad, y - pad, x + mark.width + pad, y + mark.height + pad), radius=pad, fill=(9, 18, 27, 150))
+    px_, py_ = int(short * 0.018), int(short * 0.012)
+    margin = int(short * 0.03)
+    x, y = W - margin - px_ - mark.width, H - margin - py_ - mark.height
+    ImageDraw.Draw(im).rounded_rectangle((x - px_, y - py_, x + mark.width + px_, y + mark.height + py_), radius=(mark.height + 2 * py_) // 2, fill=(9, 14, 22, 170))
     im.alpha_composite(mark, (x, y))
     return im
 
