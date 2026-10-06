@@ -1,4 +1,4 @@
-"""stock-engine v81 (installed by Studio)
+"""stock-engine v82 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1764,7 +1764,7 @@ if (USE_HF_AUDIO or EL_KEY) and plan.get("sfx", True):
     print("Sound identity:", prompt, "|", pack["cut"])
     music = os.path.join(work, "music.mp3")
     # Generate only ~60s of seamless loopable music and loop it under the whole video (saves ~80% of music cost).
-    have_music = el_audio("https://api.elevenlabs.io/v1/music", {"prompt": prompt + ", instrumental, no vocals, seamless loopable background track, consistent energy, no big drops or endings", "music_length_ms": int(min(total, 60) * 1000)}, music) \
+    have_music = el_audio("https://api.elevenlabs.io/v1/music", {"prompt": prompt + ", instrumental, no vocals, seamless loopable background track, engaging rhythmic pulse, subtle percussion fills and evolving accents every 8 seconds, controlled energy, no big drops or endings", "music_length_ms": int(min(total, 60) * 1000)}, music) \
         or el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": prompt + ", instrumental background music loop, no vocals", "duration_seconds": 22, "loop": True, "prompt_influence": 0.5}, music)
     sfx = {}
     for k, dur in (("cut", 0.8), ("cut2", 0.8), ("hit", 1.5), ("riser", 2.0), ("pop", 0.6)):
@@ -1779,8 +1779,8 @@ if (USE_HF_AUDIO or EL_KEY) and plan.get("sfx", True):
     if have_music:
         inputs += ["-stream_loop", "-1", "-i", music]
         # louder music that automatically ducks under the voice (sidechain), then swells in pauses
-        filters.append(f"[{n}:a]atrim=0:{total:.2f},volume=0.32,afade=t=in:d=0.6,afade=t=out:st={max(0, total - 2):.2f}:d=2[mraw]")
-        filters.append("[mraw][sc]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=350[m]")
+        filters.append(f"[{n}:a]atrim=0:{total:.2f},loudnorm=I=-20:TP=-3:LRA=7,volume=0.38,afade=t=in:d=0.6,afade=t=out:st={max(0, total - 2):.2f}:d=2[mraw]")
+        filters.append("[mraw][sc]sidechaincompress=threshold=0.035:ratio=4:attack=15:release=220[m]")
         labels.append("[m]"); n += 1
     else:
         filters[0] = "[0:a]anull[vo]"
@@ -1790,21 +1790,28 @@ if (USE_HF_AUDIO or EL_KEY) and plan.get("sfx", True):
         for j, s_ in enumerate(times):
             inputs.extend(["-i", sfx[key]])
             ms = max(0, int(s_ * 1000))
-            filters.append(f"[{n}:a]volume={vol},adelay={ms}|{ms}[{tag}{j}]"); labels.append(f"[{tag}{j}]"); n += 1
+            filters.append(f"[{n}:a]loudnorm=I=-23:TP=-4:LRA=5,volume={vol},afade=t=in:d=0.015,afade=t=out:st={max(0, duration(sfx[key]) - 0.08):.3f}:d=0.08,adelay={ms}|{ms}[{tag}{j}]"); labels.append(f"[{tag}{j}]"); n += 1
 
     if "hit" in sfx:
         place("hit", [0.0] + ([starts[len(starts) // 2]] if len(starts) > 6 else []), 0.55, "h")
-    cuts = [s_ - 0.3 for j, s_ in enumerate(starts) if j > 0 and rng.random() < 0.55][:50]
+    # Cue actual scene changes, not arbitrary moments; avoid a barrage on short scenes.
+    cuts = []
+    for s_ in starts[1:]:
+        cue = max(0.0, s_ - 0.25)
+        if cue >= 2.0 and cue < total - 0.8 and (not cuts or cue - cuts[-1] >= 4.0):
+            cuts.append(cue)
+        if len(cuts) >= 50:
+            break
     if "cut" in sfx:
-        place("cut", cuts[0::2], rng.uniform(0.3, 0.45), "w")
+        place("cut", cuts[0::2], rng.uniform(0.32, 0.42), "w")
     if "cut2" in sfx:
-        place("cut2", cuts[1::2], rng.uniform(0.3, 0.45), "x")
+        place("cut2", cuts[1::2], rng.uniform(0.32, 0.42), "x")
     if "riser" in sfx and len(starts) > 4:
-        place("riser", [max(0, starts[-1] - 2.0)], 0.35, "r")
+        place("riser", [max(0, starts[-1] - 2.0)], 0.25, "r")
     if "pop" in sfx:
-        place("pop", gfx_starts[:40], 0.4, "p")
+        place("pop", [s_ for s_ in gfx_starts[:40] if all(abs(s_ - cue) > 1.2 for cue in cuts)], 0.25, "p")
     if n > 1:
-        filters.append("".join(labels) + f"amix=inputs={len(labels)}:duration=first:normalize=0[out]")
+        filters.append("".join(labels) + f"amix=inputs={len(labels)}:duration=first:normalize=0,alimiter=limit=0.89:level=0:latency=1,atrim=0:{total:.2f}[out]")
         try:
             run(["ffmpeg", "-y", *inputs, "-filter_complex", ";".join(filters), "-map", "[out]", "-ar", "44100", "-ac", "2", os.path.join(work, "mixed.wav")])
             os.replace(os.path.join(work, "mixed.wav"), os.path.join(work, "voice.wav"))
@@ -1944,59 +1951,6 @@ if plan.get("data_callouts", True):
         cp = os.path.join(work, f"data{data_n}.png"); im.save(cp); data_n += 1
         card_inputs.append(cp); card_filters.append((s0, s1, "text")); last_end = s1
     print("Data callouts:", data_n)
-
-# Every video stays dynamic: every ~8s of a non-graphic scene gets a free on-screen
-# element, alternating a text panel and an "interactive tablet" showing a frame of
-# this same scene (so the picture always matches what is being said).
-def tablet_shot(t, path):
-    try:
-        subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{t:.2f}", "-i", os.path.join(work, "video.mp4"),
-                        "-frames:v", "1", path], check=True)
-        return Image.open(path).convert("RGB")
-    except Exception:
-        return None
-txt_n = 0
-for (i, st, d, g) in card_spans:
-    if g or d < 6: continue
-    sc = plan["scenes"][i]
-    head = " ".join(str(sc.get("subject") or sc.get("query") or "").upper().split()[:5])
-    words = str(sc.get("text", "")).split()
-    k = 0; s0 = st + 1.0
-    while s0 + 4.5 <= st + d - 0.3:
-        s1 = min(s0 + 4.5, st + d - 0.3)
-        if free_slot(s0, s1):
-            chunk = " ".join(words[k * 7:k * 7 + 7]) or " ".join(words[:7])
-            im = Image.new("RGBA", (W, H), (0, 0, 0, 0)); dr = ImageDraw.Draw(im)
-            m = int(W * 0.05)
-            shot = tablet_shot(min(st + d - 0.5, s1 + 2.0), os.path.join(work, f"tab{txt_n}.jpg")) if (txt_n % 2 == 1) else None
-            if shot is not None:
-                # tablet mockup on the right with the scene picture + caption bar
-                tw = int(W * 0.36); th = int(tw * 0.70); bz = int(tw * 0.04)
-                x0 = W - m - tw; y0 = int(H * 0.12)
-                dr.rounded_rectangle([x0 + 8, y0 + 10, x0 + tw + 8, y0 + th + 10], radius=int(tw * 0.06), fill=(0, 0, 0, 120))
-                dr.rounded_rectangle([x0, y0, x0 + tw, y0 + th], radius=int(tw * 0.06), fill=(18, 18, 22, 255), outline=(90, 90, 100, 255), width=3)
-                sw, sh = tw - 2 * bz, th - 2 * bz
-                scr = ImageOps.fit(shot, (sw, sh), method=Image.Resampling.LANCZOS).convert("RGBA")
-                bar = int(sh * 0.24); bd = ImageDraw.Draw(scr)
-                bd.rectangle([0, sh - bar, sw, sh], fill=(10, 10, 14, 215))
-                bd.rectangle([0, sh - bar, int(sw * 0.02), sh], fill=(255, 140, 0, 255))
-                f1, fs1 = fit_font(bd, head or chunk, int(bar * 0.42), int(sw * 0.9))
-                bd.text((int(sw * 0.05), sh - bar + (bar - fs1) // 2), head or chunk, font=f1, fill=(255, 196, 0, 255))
-                im.paste(scr, (x0 + bz, y0 + bz), scr)
-                dr.ellipse([x0 + tw // 2 - 4, y0 + bz // 2 - 4, x0 + tw // 2 + 4, y0 + bz // 2 + 4], fill=(60, 60, 70, 255))
-            else:
-                pw = int(W * 0.55); top = int(H * 0.10)
-                f1, fs1 = fit_font(dr, head or chunk, int(H * 0.06), pw - m)
-                f2, fs2 = fit_font(dr, chunk, int(H * 0.04), pw - m)
-                ph = fs1 + fs2 + int(H * 0.07)
-                dr.rounded_rectangle([m, top, m + pw, top + ph], radius=int(H * 0.015), fill=(10, 10, 14, 200))
-                dr.rectangle([m, top, m + int(W * 0.008), top + ph], fill=(255, 140, 0, 255))
-                dr.text((m + int(W * 0.025), top + int(H * 0.025)), head or chunk, font=f1, fill=(255, 196, 0, 255))
-                if head: dr.text((m + int(W * 0.025), top + int(H * 0.035) + fs1), chunk, font=f2, fill=(255, 255, 255, 255))
-            cp = os.path.join(work, f"txt{txt_n}.png"); im.save(cp); txt_n += 1
-            card_inputs.append(cp); card_filters.append((s0, s1, "text"))
-        k += 1; s0 += 8.0
-print("Text panels:", txt_n)
 
 def card_chain(src, first_idx):
     # full-screen AI pictures fade in/out; data callouts fade over the footage
