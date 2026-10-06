@@ -1,4 +1,4 @@
-"""stock-engine v80 (installed by Studio)
+"""stock-engine v81 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1599,12 +1599,10 @@ for i, sc in enumerate(plan["scenes"]):
     starts.append(t0)
     text = sc["text"].strip()
     a = os.path.join(work, f"a{i}.mp3"); speak(text, a)
+    # Scene length always follows the voice: the narrator talks the whole time,
+    # presentations stay only while their narration plays (no silent holds),
+    # so the video matches the length the owner asked for.
     d = duration(a) + 0.25
-    if sc.get("presentationOnly") or (i >= 3 and sc.get("visual")):
-        # Presentations must stay on screen long enough to read and understand:
-        # a full 30 seconds, and longer if the narration itself runs past 30s
-        # (never cut the voice short).
-        d = max(30.0, d)
     seg = os.path.join(work, f"s{i}.mp4")
     q = sc.get("query", plan.get("fallback_query", "city"))
     set_scene_subject(sc.get("subject") or "")
