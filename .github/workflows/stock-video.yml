@@ -1,4 +1,4 @@
-# stock-engine v77 (installed by Studio)
+# stock-engine v80 (installed by Studio)
 name: Stock Clips Video
 
 on:
@@ -71,9 +71,6 @@ jobs:
           HIGGSFIELD_TTS_MODEL: ${{ secrets.HIGGSFIELD_TTS_MODEL }}
           HIGGSFIELD_MUSIC_MODEL: ${{ secrets.HIGGSFIELD_MUSIC_MODEL }}
           LOVABLE_API_KEY: ${{ secrets.LOVABLE_API_KEY }}
-          HEYGEN_API_KEY: ${{ secrets.HEYGEN_API_KEY }}
-          HEYGEN_AVATAR_ID: ${{ secrets.HEYGEN_AVATAR_ID }}
-          HEYGEN_AVATAR_IDS: ${{ secrets.HEYGEN_AVATAR_IDS }}
           PREMIUM_VOICE: ${{ github.event.inputs.premium_voice }}
         run: python scripts/stock/render_stock_video.py /tmp/brand-video/daily-video.mp4
 
