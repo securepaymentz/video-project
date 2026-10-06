@@ -1,4 +1,4 @@
-"""stock-engine v87 (installed by Studio)
+"""stock-engine v89 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1279,6 +1279,32 @@ VARIANTS = {"chart": [frame_chart, frame_line], "stat": [frame_stat, frame_stat_
 _VC = {}
 
 
+def opening_location_overlay(fr, t, i):
+    loc = plan.get("opening_location") if i == 0 and t < 4.0 else None
+    if not isinstance(loc, dict) or not loc.get("polygons") or not loc.get("name"):
+        return
+    # Dedicated top margin above presentation content; no overlap with captions.
+    bw, bh = W * (0.34 if vertical else 0.22), H * 0.09
+    x, y = W - bw - W * 0.065, H * 0.02
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(overlay)
+    d.rounded_rectangle([x, y, x + bw, y + bh], radius=int(8 * U), fill=(9, 18, 27, 230))
+    size = bh * 0.74
+    rings = loc["polygons"]
+    points = [pt for ring in rings for pt in ring if isinstance(pt, list) and len(pt) == 2]
+    if not points: return
+    maxx, maxy = max(pt[0] for pt in points), max(pt[1] for pt in points)
+    for ring in rings:
+        if len(ring) >= 3:
+            d.polygon([(x + bh * 0.12 + pt[0] * size, y + (bh - maxy * size) / 2 + pt[1] * size) for pt in ring], fill=(240, 245, 250, 255))
+    tx = x + bh * 0.18 + maxx * size
+    broadcast_text(d, loc["name"], (tx, y + bh * 0.26, bw - (tx - x) - bh * 0.1, bh * 0.58), 32 * U, (240, 245, 250, 255), 2)
+    # Visible at frame zero, subtle settle and short exit, never adds duration.
+    opacity = min(1.0, max(0.0, (4.0 - t) / 0.35))
+    overlay.putalpha(overlay.getchannel("A").point(lambda a: int(a * opacity)))
+    fr.alpha_composite(overlay, (0, int(3 * U * math.sin(t * 1.4))))
+
+
 def render_visual(v, d, seg, i):
     typ = v.get("type")
     if typ in VARIANTS:
@@ -1304,6 +1330,7 @@ def render_visual(v, d, seg, i):
             fr = fn(v, t, p, cache)
             if v.get("type") != "card":
                 fr.alpha_composite(vignette())
+            opening_location_overlay(fr, t, i)
             fr.save(os.path.join(fdir, f"f{k:03d}.png"))
     except Exception as e:
         print("Graphic failed, using footage:", e)
@@ -1792,25 +1819,18 @@ def el_audio(url, body, path):
 if (USE_HF_AUDIO or EL_KEY) and plan.get("sfx", True):
     total = duration(os.path.join(work, "voice.wav"))
     rng = random.Random()
-    # Every video gets its own sound identity: a music style + a matching SFX pack, picked at random.
+    # Varied approachable grooves, never urgent news or ominous trailer sound.
     STYLES = [
-        "modern trap-documentary beat, deep 808, crisp hi-hats, dark synth pads, building tension",
-        "cinematic hybrid trailer pulse, ticking clock, low strings, big drums",
-        "lo-fi hip hop with punchy kick, warm keys, investigative mood",
-        "dark electronic news underscore, driving bassline, arpeggiated synths",
-        "uplifting corporate funk groove, slap bass, claps, confident and catchy",
-        "minimal piano and pizzicato strings, curious suspense, light percussion",
-        "synthwave documentary groove, retro drums, pulsing bass",
-        "gritty boom bap beat, vinyl crackle, serious street-level reportage",
-        "epic orchestral tension with modern percussion hits",
-        "future bass underscore, energetic, plucks and sidechained pads",
+        "light funk groove, warm bass, soft claps, cheerful keys, relaxed confidence",
+        "bouncy lo-fi instrumental, warm piano chords, crisp soft drums, curious mood",
+        "clean indie pop instrumental, muted guitar, gentle syncopation, approachable",
+        "light marimba and soft percussion, playful curiosity, warm acoustic bass",
+        "fresh mellow electronic groove, rounded plucks, soft beat, clear and engaging",
     ]
     PACKS = [
-        {"cut": "fast cinematic air whoosh swoosh", "hit": "deep sub boom impact with reverb tail", "pop": "clean UI pop ding", "riser": "short tension riser into hit"},
-        {"cut": "glitchy digital swipe transition", "hit": "heavy trailer braam hit", "pop": "soft bubble pop click", "riser": "reverse cymbal swell"},
-        {"cut": "tape stop rewind transition", "hit": "punchy 808 drum drop", "pop": "cash register ka-ching", "riser": "noise sweep riser"},
-        {"cut": "camera shutter flash whoosh", "hit": "orchestral timpani hit", "pop": "typewriter key ding", "riser": "string swell riser"},
-        {"cut": "quick paper swipe swoosh", "hit": "news broadcast stinger sting", "pop": "notification chime", "riser": "rising synth sweep"},
+        {"cut": "gentle short paper swipe", "pop": "soft rounded bubble pop"},
+        {"cut": "light airy soft swoosh", "pop": "quiet wooden click"},
+        {"cut": "smooth short brush swipe", "pop": "subtle warm pluck"},
     ]
     style = rng.choice(STYLES)
     pack = rng.choice(PACKS)
@@ -1822,7 +1842,7 @@ if (USE_HF_AUDIO or EL_KEY) and plan.get("sfx", True):
     have_music = el_audio("https://api.elevenlabs.io/v1/music", {"prompt": prompt + ", instrumental, no vocals, seamless loopable background track, engaging rhythmic pulse, subtle percussion fills and evolving accents every 8 seconds, controlled energy, no big drops or endings", "music_length_ms": int(min(total, 60) * 1000)}, music) \
         or el_audio("https://api.elevenlabs.io/v1/sound-generation", {"text": prompt + ", instrumental background music loop, no vocals", "duration_seconds": 22, "loop": True, "prompt_influence": 0.5}, music)
     sfx = {}
-    for k, dur in (("cut", 0.8), ("cut2", 0.8), ("hit", 1.5), ("riser", 2.0), ("pop", 0.6)):
+    for k, dur in (("cut", 0.5), ("cut2", 0.5), ("pop", 0.4)):
         text = pack["cut"] + ", variation two" if k == "cut2" else pack[k]
         if k == "pop" and not gfx_starts:
             continue
@@ -1833,8 +1853,8 @@ if (USE_HF_AUDIO or EL_KEY) and plan.get("sfx", True):
     n = 1
     if have_music:
         inputs += ["-stream_loop", "-1", "-i", music]
-        # louder music that automatically ducks under the voice (sidechain), then swells in pauses
-        filters.append(f"[{n}:a]atrim=0:{total:.2f},loudnorm=I=-20:TP=-3:LRA=7,volume=0.38,afade=t=in:d=0.6,afade=t=out:st={max(0, total - 2):.2f}:d=2[mraw]")
+        # Keep a light groove audible while voice remains the foreground.
+        filters.append(f"[{n}:a]atrim=0:{total:.2f},loudnorm=I=-20:TP=-3:LRA=7,volume=0.30,afade=t=in:d=0.6,afade=t=out:st={max(0, total - 2):.2f}:d=2[mraw]")
         filters.append("[mraw][sc]sidechaincompress=threshold=0.035:ratio=4:attack=15:release=220[m]")
         labels.append("[m]"); n += 1
     else:
@@ -1847,8 +1867,6 @@ if (USE_HF_AUDIO or EL_KEY) and plan.get("sfx", True):
             ms = max(0, int(s_ * 1000))
             filters.append(f"[{n}:a]loudnorm=I=-23:TP=-4:LRA=5,volume={vol},afade=t=in:d=0.015,afade=t=out:st={max(0, duration(sfx[key]) - 0.08):.3f}:d=0.08,adelay={ms}|{ms}[{tag}{j}]"); labels.append(f"[{tag}{j}]"); n += 1
 
-    if "hit" in sfx:
-        place("hit", [0.0] + ([starts[len(starts) // 2]] if len(starts) > 6 else []), 0.55, "h")
     # Cue actual scene changes, not arbitrary moments; avoid a barrage on short scenes.
     cuts = []
     for s_ in starts[1:]:
@@ -1858,11 +1876,9 @@ if (USE_HF_AUDIO or EL_KEY) and plan.get("sfx", True):
         if len(cuts) >= 50:
             break
     if "cut" in sfx:
-        place("cut", cuts[0::2], rng.uniform(0.32, 0.42), "w")
+        place("cut", cuts[0::2], rng.uniform(0.22, 0.30), "w")
     if "cut2" in sfx:
-        place("cut2", cuts[1::2], rng.uniform(0.32, 0.42), "x")
-    if "riser" in sfx and len(starts) > 4:
-        place("riser", [max(0, starts[-1] - 2.0)], 0.25, "r")
+        place("cut2", cuts[1::2], rng.uniform(0.22, 0.30), "x")
     if "pop" in sfx:
         place("pop", [s_ for s_ in gfx_starts[:40] if all(abs(s_ - cue) > 1.2 for cue in cuts)], 0.25, "p")
     if n > 1:
