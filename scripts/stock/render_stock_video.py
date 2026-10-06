@@ -1,4 +1,4 @@
-"""stock-engine v86 (installed by Studio)
+"""stock-engine v87 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1230,6 +1230,50 @@ def frame_chapter(v, t, p, cache):
     return img
 
 
+def broadcast_text(d, text, box, size, fill, maxlines=2):
+    # Bound both dimensions, even for long unbroken names.
+    x, y, bw, bh = box
+    f, lines = fit_lines(str(text or ""), FB, size, bw, maxlines, minsize=max(12, int(18 * U)))
+    while f.size * 1.2 * len(lines) > bh and f.size > 10:
+        f, lines = fit_lines(str(text or ""), FB, int(f.size * 0.9), bw, maxlines, minsize=10)
+    for j, line in enumerate(lines):
+        while line and f.getlength(line) > bw:
+            line = line[:-2].rstrip() + "…" if len(line) > 2 else ""
+        d.text((x, y + j * f.size * 1.2), line, font=f, fill=fill)
+
+
+def frame_broadcast(v, t, p, cache):
+    # Crisp native type over the exact-subject media, no invented logo or map.
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    accent = [(75, 210, 220, 255), (255, 169, 105, 255), (240, 111, 125, 255)][PV]
+    ink, white, muted = (9, 18, 27, 220), (255, 255, 255, 255), (220, 233, 240, 255)
+    x, bw = W * 0.075, W * (0.85 if vertical else 0.56)
+    top, bottom = H * 0.12, H * (0.68 if vertical else 0.78)
+    d.rectangle([x - W * 0.025, top - H * 0.025, x + bw + W * 0.025, bottom], fill=ink)
+    # Subtle movement without repeating the other presets' grid backgrounds.
+    bar = bw * (0.75 + 0.05 * math.sin(t * 1.4))
+    d.rectangle([x, top, x + bar, top + 5 * U], fill=accent)
+    broadcast_text(d, v.get("headline", ""), (x, top + H * 0.025, bw, H * 0.12), 70 * U, white)
+    value_y = H * (0.29 if vertical else 0.34)
+    broadcast_text(d, v.get("value", ""), (x, value_y, bw, H * 0.12), 154 * U, accent, 1)
+    broadcast_text(d, v.get("sub", ""), (x, value_y + H * 0.125, bw, H * 0.045), 38 * U, muted, 1)
+    detail_y = value_y + H * 0.19
+    if v.get("change"):
+        trend = v.get("trend")
+        if trend in ("up", "down"):
+            ay, aw = detail_y + 28 * U, 26 * U
+            pts = [(x, ay + aw), (x + aw / 2, ay), (x + aw, ay + aw)]
+            if trend == "down": pts = [(xx, 2 * ay + aw - yy) for xx, yy in pts]
+            d.polygon(pts, fill=accent)
+        dx = x + 42 * U if trend in ("up", "down") else x
+        broadcast_text(d, v["change"], (dx, detail_y, bw - (dx - x), H * 0.055), 60 * U, white, 1)
+        broadcast_text(d, v.get("period", ""), (x, detail_y + H * 0.06, bw, H * 0.045), 34 * U, muted, 1)
+    footer = " · ".join(s for s in [v.get("location"), ("Source: " + v["source"]) if v.get("source") else None] if s)
+    broadcast_text(d, footer, (x, bottom - H * 0.065, bw, H * 0.055), 28 * U, muted)
+    return img
+
+
 VARIANTS = {"chart": [frame_chart, frame_line], "stat": [frame_stat, frame_stat_split],
             "list": [frame_list, frame_grid], "compare": [frame_compare, frame_hbars]}
 _VC = {}
@@ -1243,7 +1287,7 @@ def render_visual(v, d, seg, i):
     else:
         fn = {"title": frame_title, "card": frame_card, "ranking": frame_ranking, "percent": frame_percent,
               "timeline": frame_timeline, "quote": frame_quote, "alert": frame_alert, "receipt": frame_receipt,
-              "myth": frame_myth, "chapter": frame_chapter}.get(typ)
+              "myth": frame_myth, "chapter": frame_chapter, "broadcast": frame_broadcast}.get(typ)
     if not fn:
         return False
     v = dict(v, _i=i, _opening=(i == 0))
