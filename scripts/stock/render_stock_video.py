@@ -1,4 +1,4 @@
-"""stock-engine v98 (installed by Studio)
+"""stock-engine v100 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -422,9 +422,8 @@ def clip_rank(query, items, thumb):
 
 
 def find_photo(query):
-    # Owner picked clips: ONLY their media (plus authorized ChatGPT art) — never other stock.
-    if plan.get("my_clips"):
-        return None, None
+    # Owner rule: never search the internet for media — only the owner's selected clips are used.
+    return None, None
     srcs = [f for f, k in ((find_unsplash, UNSPLASH), (find_pixabay_photo, PIXABAY)) if k]
     random.shuffle(srcs)
     for f in srcs:
@@ -508,9 +507,8 @@ def find_pixabay(query, need):
 
 
 def find_clip(query, need):
-    # Owner picked clips: ONLY their media (plus authorized ChatGPT art) — never other stock.
-    if plan.get("my_clips"):
-        return None, None
+    # Owner rule: never search the internet for media — only the owner's selected clips are used.
+    return None, None
     link, author = find_pixabay(query, need)
     if link or not PEXELS:
         return link, author
@@ -1494,7 +1492,7 @@ def fallback_visual(text, subject=None):
 
 def fill_background(i, q, d, seg):
     """Never fail a scene for missing media: approved reuse first when the owner picked clips, else stock."""
-    for step in ((reuse_selected, reuse_last) if MY_CLIPS else (stock_footage, reuse_selected, reuse_last)):
+    for step in (reuse_selected, reuse_last):
         try:
             if step(i, q, d, seg):
                 print(f"Scene {i + 1} background filled by {step.__name__}")
@@ -1787,6 +1785,9 @@ def fresh_category_image(prompt, image):
 
 def gen_ai_image(prompt, size):
     global AI_IMAGE_BLOCKED
+    # Owner rule: ChatGPT images only as authorized presentation backgrounds (never people, cards or icons).
+    if not globals().get("PRESENTATION_AI"):
+        raise RuntimeError("AI images are only allowed for authorized presentation backgrounds.")
     unique = bool(plan.get("category_images") or plan.get("ai_presentations"))
     if unique:
         if AI_IMAGE_BLOCKED or not OPENAI:
@@ -1886,14 +1887,17 @@ for i, sc in enumerate(plan["scenes"]):
         vis = dict(vis, query=q)
         # Paid AI photo as the presentation background (switch "AI presentation backgrounds"):
         # a real-looking photo of the scene's subject behind the text, instead of a plain color.
-        if presentation_only and not SCENE_CLIPS and plan.get("ai_presentations") and AI_SPENT < plan.get("image_budget", 20):
+        if presentation_only and not SCENE_CLIPS and (plan.get("ai_presentations") or plan.get("category_images")) and AI_SPENT < plan.get("image_budget", 20):
             try:
+                globals()["PRESENTATION_AI"] = True
                 subject_ = str(sc.get("subject") or sc.get("query") or "").strip()
                 _img = gen_ai_image("Photorealistic cinematic editorial photo, real lighting, 35mm, United States setting, wide composition "
                                     "with calm darker space for overlaid text. Show literally and only: " + subject_ +
                                     ". Context sentence: " + str(sc.get("text", ""))[:220] +
                                     ". No text, letters, numbers, signs, logos, cartoons, CGI, nudity or insects. "
-                                    "If the subject is an object, show only the object with no people.", "1536x1024")
+                                    "Absolutely no people, faces, hands or human figures — only objects, places and things from the category: "
+                                    + str(plan.get("title", ""))[:100] + ".", "1536x1024")
+                globals()["PRESENTATION_AI"] = False
                 _ip = os.path.join(work, f"aibg{i}.png"); _img.convert("RGB").save(_ip)
                 _frames = int((d + 0.1) * 30) + 1
                 _kb = (f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},"
@@ -1904,6 +1908,7 @@ for i, sc in enumerate(plan["scenes"]):
                 vis["_aibg"] = _bp
                 AI_SPENT += 1
             except Exception as e:
+                globals()["PRESENTATION_AI"] = False
                 print("AI presentation background skipped:", e)
         # Keep the graphic and its approved background throughout this spoken explanation.
         gd = d
@@ -2238,6 +2243,7 @@ if plan.get("topic_icons") and OPENAI:
         s0 = st + 0.3; s1 = min(st + d - 0.2, s0 + 4.0)
         if s1 - s0 < 2 or s0 < last_end + 5: continue
         key = subject.lower()
+        break  # Owner rule: no ChatGPT-generated icons.
         if key not in icon_cache:
             try:
                 import io
