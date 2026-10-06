@@ -1,4 +1,4 @@
-"""stock-engine v85 (installed by Studio)
+"""stock-engine v86 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -737,47 +737,12 @@ def frame_title(v, t, p, cache):
 
 
 def frame_chart(v, t, p, cache):
-    up = v.get("trend") != "down"
-    if "bg" not in cache:
-        cache["bg"] = radial(*BG.get(v.get("color") or "blue", BG["blue"]))
-        cache["lab"] = label(v["headline"].upper(), 58 * U, W * 0.6)
-        cache["val"] = label(v.get("value") or "", 150 * U, W * 0.7, bg=(110, 110, 120, 170)) if v.get("value") else None
-    img = cache["bg"].convert("RGBA")
-    grid(img, t, 55)
-    d = ImageDraw.Draw(img)
-    x0, x1 = W * 0.18, W * 0.86
-    y0, y1 = H * (0.3 if vertical else 0.12), H * (0.72 if vertical else 0.9)
-    d.line([(x0, y0), (x0, y1), (x1, y1)], fill=(255, 255, 255, 255), width=max(3, int(4 * U)))
-    n = 7
-    bw = (x1 - x0) / n * 0.55
-    tops = []
-    for k in range(n):
-        frac = 0.15 + 0.8 * ((k + 1) / n) ** 1.6
-        if not up:
-            frac = 0.15 + 0.8 * ((n - k) / n) ** 1.6
-        g = ease(p * 1.6 - k * 0.12)
-        bx = x0 + (x1 - x0) / n * (k + 0.5) - bw / 2
-        top = y1 - (y1 - y0) * frac * g
-        tops.append((bx + bw / 2, y1 - (y1 - y0) * frac))
-        if g > 0:
-            d.rectangle([bx, top, bx + bw, y1 - 2], fill=(225, 228, 245, 235))
-    # yellow trend arrow drawn progressively
-    pa = ease(p * 1.3 - 0.2)
-    if pa > 0:
-        pts = [(x0 + (x1 - x0) * s, (y1 - (y1 - y0) * (0.25 + 0.7 * (s ** 2 if up else (1 - s) ** 2)))) for s in [i / 40 for i in range(41)]]
-        pts = [(x, yy - (y1 - y0) * 0.06) for x, yy in pts][: max(2, int(41 * pa))]
-        col = (255, 220, 40, 255) if up else (255, 80, 60, 255)
-        d.line(pts, fill=col, width=max(5, int(8 * U)), joint="curve")
-        (ax, ay), (bx2, by2) = pts[-2], pts[-1]
-        ang = math.atan2(by2 - ay, bx2 - ax)
-        L = 34 * U
-        for da in (2.6, -2.6):
-            d.line([(bx2, by2), (bx2 + L * math.cos(ang + da), by2 + L * math.sin(ang + da))], fill=col, width=max(5, int(8 * U)))
-    paste_scaled(img, cache["lab"], x0 + cache["lab"].width / 2 + 30 * U, y0 + (y1 - y0) * 0.3, 1, ease(p * 2.5))
-    if cache["val"] is not None:
-        paste_scaled(img, cache["val"], W / 2, y1 - (y1 - y0) * 0.15, 0.7 + 0.3 * ease(p * 1.5 - 0.5), ease(p * 2 - 0.8))
-    return img
-
+    # Only render explicit labeled observations, never synthetic seven-bar market history.
+    rows = [kv(s) for s in (v.get("items") or [])[:5]]
+    rows = [(lab, val) for lab, val in rows if parse_num(val)]
+    if len(rows) >= 2:
+        return frame_bars(v, t, p, cache, rows, False)
+    return frame_stat(v, t, p, cache) if v.get("value") else frame_title(v, t, p, cache)
 
 def frame_card(v, t, p, cache):
     up = v.get("trend") != "down"
@@ -868,7 +833,7 @@ def frame_stat(v, t, p, cache):
     grid(img, t, 30)
     d = ImageDraw.Draw(img)
     pn, g, a = cache["num"], ease(p * 1.3), ease(p * 2)
-    txt = f"{pn[0]}{pn[1] * g:,.{pn[2]}f}{pn[3]}" if pn else (v.get("value") or "")
+    txt = (v.get("value") or "") if v.get("_opening") else (f"{pn[0]}{pn[1] * g:,.{pn[2]}f}{pn[3]}" if pn else (v.get("value") or ""))
     f = cache["f"]
     tw = f.getlength(txt)
     y = H * 0.42
@@ -1024,32 +989,8 @@ def headline_tl(d, v, p, size=72):
 
 
 def frame_line(v, t, p, cache):
-    img, d = base(v, cache, t, "blue", 35)
-    headline_tl(d, v, p)
-    up = v.get("trend") != "down"
-    x0, x1, y0, y1 = W * 0.1, W * 0.88, H * 0.32, H * 0.86
-    d.line([(x0, y1), (x1, y1)], fill=(255, 255, 255, 120), width=max(2, int(3 * U)))
-    pts = []
-    for k in range(61):
-        s = k / 60
-        f_ = s ** 1.5 if up else (1 - s) ** 1.5
-        pts.append((x0 + (x1 - x0) * s, y1 - (y1 - y0) * (0.12 + 0.75 * f_ + 0.04 * math.sin(s * 19))))
-    vis = pts[: max(2, int(61 * ease(p * 1.4)))]
-    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    ImageDraw.Draw(ov).polygon(vis + [(vis[-1][0], y1), (x0, y1)], fill=(232, 93, 42, 70))
-    img.alpha_composite(ov)
-    d = ImageDraw.Draw(img)
-    d.line(vis, fill=ACC, width=max(4, int(8 * U)), joint="curve")
-    ex, ey = vis[-1]
-    r = 14 * U
-    d.ellipse([ex - r, ey - r, ex + r, ey + r], fill=(255, 255, 255))
-    if v.get("value") and p > 0.6:
-        if "lab" not in cache:
-            cache["lab"] = label(v["value"], 80 * U, W * 0.4, bg=ACC)
-        lab = cache["lab"]
-        paste_scaled(img, lab, min(W - lab.width / 2 - 20 * U, ex), max(lab.height, ey - lab.height), 1, ease((p - 0.6) * 3))
-    return img
-
+    # The schema has no measured time-series points; use labeled evidence bars instead.
+    return frame_chart(v, t, p, cache)
 
 def frame_stat_split(v, t, p, cache):
     img, d = base(v, cache, t, "dark", 25)
@@ -1305,21 +1246,25 @@ def render_visual(v, d, seg, i):
               "myth": frame_myth, "chapter": frame_chapter}.get(typ)
     if not fn:
         return False
-    v = dict(v, _i=i)
+    v = dict(v, _i=i, _opening=(i == 0))
     fdir = os.path.join(work, f"g{i}")
     os.makedirs(fdir, exist_ok=True)
     cache = {}
-    anim = min(int(d * 30), 54)  # ~1.8s of build-up animation, then hold with a slow push-in
+    # Animate the background for the whole spoken scene, not a frozen final PNG.
+    graphic_fps = 10
+    anim = max(1, math.ceil(d * graphic_fps))
     try:
         for k in range(anim):
-            fr = fn(v, k / 30, k / max(1, anim - 1), cache)
+            t = k / graphic_fps
+            p = min(1.0, (0.55 if i == 0 else 0.08) + t / 1.4)
+            fr = fn(v, t, p, cache)
             if v.get("type") != "card":
                 fr.alpha_composite(vignette())
             fr.save(os.path.join(fdir, f"f{k:03d}.png"))
     except Exception as e:
         print("Graphic failed, using footage:", e)
         return False
-    hold = max(0.0, d - anim / 30)
+    hold = max(0.0, d - anim / graphic_fps)
     # Background = the scene's own footage, darkened, so viewers keep watching video under the graphic.
     bg = os.path.join(work, f"gb{i}.mp4")
     has_bg = False
@@ -1348,7 +1293,7 @@ def render_visual(v, d, seg, i):
     fc = (f"[0:v]scale={W}:{H},setsar=1,colorlevels=romax=0.72:gomax=0.72:bomax=0.72[b];"
           f"[1:v]format=rgba,tpad=stop_mode=clone:stop_duration={hold + 0.1:.2f}[g];"
           f"[b][g]overlay=0:0:format=auto,fps=30,format=yuv420p[o]")
-    run(["ffmpeg", "-y", *bg_in, "-framerate", "30", "-i", os.path.join(fdir, "f%03d.png"),
+    run(["ffmpeg", "-y", *bg_in, "-framerate", str(graphic_fps), "-i", os.path.join(fdir, "f%03d.png"),
          "-filter_complex", fc, "-map", "[o]", "-t", f"{d:.2f}",
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
     return True
@@ -1675,7 +1620,7 @@ for i, sc in enumerate(plan["scenes"]):
     CUR_CLIP = sc.get("clip") if isinstance(sc.get("clip"), dict) and sc["clip"].get("url") else None
     SCENE_CLIPS = [c for c in sc.get("clips", []) if isinstance(c, dict) and c.get("url")] or ([CUR_CLIP] if CUR_CLIP else [])
     presentation_only = bool(sc.get("presentationOnly"))
-    vis = sc.get("visual") if (i >= 3 or presentation_only) else None
+    vis = sc.get("visual")
     done = False
     if vis:
         gfx_starts.append(t0)
@@ -1702,8 +1647,8 @@ for i, sc in enumerate(plan["scenes"]):
                 AI_SPENT += 1
             except Exception as e:
                 print("AI presentation background skipped:", e)
-        # Presentation graphics stay on screen up to 30 seconds so people can read them.
-        gd = d if presentation_only else min(d, 30.0)
+        # Keep the graphic and its approved background throughout this spoken explanation.
+        gd = d
         gseg = os.path.join(work, f"g{i}.mp4")
         if render_visual(vis, gd, gseg, i):
             rest = d - gd
