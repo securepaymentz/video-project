@@ -1,4 +1,4 @@
-"""stock-engine v74 (installed by Studio)
+"""stock-engine v76 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1232,7 +1232,7 @@ def render_visual(v, d, seg, i):
     typ = v.get("type")
     if typ in VARIANTS:
         n_ = _VC.get(typ, 0); _VC[typ] = n_ + 1
-        fn = VARIANTS[typ][n_ % 2]
+        fn = VARIANTS[typ][(n_ + int(plan.get("presentation_variant") or 0)) % 2]
     else:
         fn = {"title": frame_title, "card": frame_card, "ranking": frame_ranking, "percent": frame_percent,
               "timeline": frame_timeline, "quote": frame_quote, "alert": frame_alert, "receipt": frame_receipt,
@@ -1260,12 +1260,14 @@ def render_visual(v, d, seg, i):
     # A paid AI photo background (presentation scenes) is used as-is; no stock search.
     if v.get("_aibg") and os.path.exists(v["_aibg"]):
         bg = v["_aibg"]; has_bg = True
-    # Use the scene's selected image for a presentation; only automatic videos search fallbacks.
-    tries = [] if (v.get("_nobg") or has_bg) else [v.get("query")]
-    # Theme fallbacks stay on-topic (no generic street shots that end up showing taxis).
-    # Never generic money shots: fall back to real American people at work.
-    if not MY_CLIPS:
-        tries += [plan.get("fallback_query"), random.choice(["american workers office USA", "american construction workers", "american warehouse workers", "american store employees", "american family kitchen"])]
+    # Selected backgrounds always take priority, including full-scene presentations.
+    # Never fill a missing background with another scene's image or generic footage.
+    if not has_bg and SCENE_CLIPS:
+        try:
+            has_bg = make_scene_footage(i, v.get("query"), d + 0.1, bg)
+        except Exception as e:
+            print("Selected presentation background unavailable:", e)
+    tries = [] if (MY_CLIPS or has_bg or v.get("_nobg")) else [v.get("query"), SCENE_SUBJECT]
     for q_ in [x for x in tries if x]:
         try:
             if make_footage(i, q_, d + 0.1, bg, False) or make_footage(i, q_, d + 0.1, bg, True):
@@ -1275,10 +1277,9 @@ def render_visual(v, d, seg, i):
     if has_bg:
         bg_in = ["-i", bg]
     else:
-        if MY_CLIPS and not v.get("_nobg"):
-            raise RuntimeError(f"Selected background image failed for scene {i}; refusing to replace it with unrelated footage")
+        print(f"Presentation {i}: no matching background available; no unrelated photo or unapproved AI purchase")
         bg_in = ["-f", "lavfi", "-i", f"color=c=0x101014:s={W}x{H}:r=30:d={d + 0.1:.2f}"]
-    fc = (f"[0:v]scale={W}:{H},setsar=1,colorlevels=romax=0.55:gomax=0.55:bomax=0.55,gblur=sigma=2[b];"
+    fc = (f"[0:v]scale={W}:{H},setsar=1,colorlevels=romax=0.72:gomax=0.72:bomax=0.72[b];"
           f"[1:v]format=rgba,tpad=stop_mode=clone:stop_duration={hold + 0.1:.2f}[g];"
           f"[b][g]overlay=0:0:format=auto,fps=30,format=yuv420p[o]")
     run(["ffmpeg", "-y", *bg_in, "-framerate", "30", "-i", os.path.join(fdir, "f%03d.png"),
@@ -1591,7 +1592,37 @@ if reporter_seg:
     # The video OPENS with the Lovable AI cinematic opener (frame + SFX on top, no captions — no spoken line).
     rep_at = {0}
 
+AI_IMAGE_BLOCKED = False
+
+def fresh_category_image(prompt, image):
+    # Store tiny visual fingerprints, never image files; reject repeated-looking output without paying for a retry.
+    import hashlib
+    gray = image.convert("L").resize((9, 8))
+    pixels = list(gray.getdata())
+    bits = sum((pixels[y * 9 + x] > pixels[y * 9 + x + 1]) << (y * 8 + x) for y in range(8) for x in range(8))
+    old = history | {hkey(k) for k in used}
+    fingerprints = [int(k[7:], 16) for k in old if k.startswith("aihash:")]
+    if any((bits ^ prior).bit_count() <= 4 for prior in fingerprints):
+        raise RuntimeError("Generated photo looks too similar to an earlier photo; keeping approved media instead.")
+    used.add("aihash:" + format(bits, "016x"))
+    return image
+
 def gen_ai_image(prompt, size):
+    global AI_IMAGE_BLOCKED
+    if plan.get("category_images"):
+        if AI_IMAGE_BLOCKED or not OPENAI:
+            raise RuntimeError("ChatGPT photos unavailable; keeping approved clips and free presentations.")
+        import hashlib
+        angles = ["eye-level medium shot", "close-up of the exact subject", "wide establishing photograph", "three-quarter angle photograph", "overhead detail photograph", "low-angle detail photograph"]
+        lights = ["soft natural daylight", "realistic warm indoor light", "neutral diffused light", "natural side lighting"]
+        digest = hashlib.sha256(prompt.encode()).hexdigest()[:16]
+        offset = int(hashlib.sha256(str(plan.get("image_run_id", "")).encode()).hexdigest()[:8], 16) % 24
+        known = history | {hkey(k) for k in used}
+        choices = [(offset + n) % 24 for n in range(24)]
+        choice = next((n for n in choices if f"aicomposition:{digest}:{n}" not in known), offset)
+        prompt += ". Photorealistic, looks like a real camera photograph, never cartoon, anime, illustration or 3D render. Composition: " + angles[choice % 6] + "; " + lights[choice // 6] + ". Keep the exact subject and US setting unchanged. Illustrative editorial photo, not evidence of a real news event."
+        used.add(f"aicomposition:{digest}:{choice}")
+        size = "1024x1024"
     # Owner's own OpenAI (ChatGPT API) key first: billed to their OpenAI account, cheapest mini model.
     if OPENAI:
         try:
@@ -1600,8 +1631,12 @@ def gen_ai_image(prompt, size):
                                json={"model": IMG_MODEL, "prompt": prompt, "size": size, "quality": "low", "n": 1}, timeout=300)
             ro.raise_for_status()
             import io
-            return Image.open(io.BytesIO(base64.b64decode(ro.json()["data"][0]["b64_json"]))).convert("RGB")
+            image = Image.open(io.BytesIO(base64.b64decode(ro.json()["data"][0]["b64_json"]))).convert("RGB")
+            return fresh_category_image(prompt, image) if plan.get("category_images") else image
         except Exception as e:
+            if plan.get("category_images"):
+                if isinstance(e, requests.HTTPError): AI_IMAGE_BLOCKED = True
+                raise RuntimeError("ChatGPT photo skipped; no paid provider fallback: " + str(e)[:200]) from e
             print("OpenAI key image failed, using Lovable AI:", str(e)[:200])
     key = os.environ.get("LOVABLE_API_KEY", "").strip()
     if not key:
@@ -1652,7 +1687,7 @@ for i, sc in enumerate(plan["scenes"]):
     text = sc["text"].strip()
     a = os.path.join(work, f"a{i}.mp3"); speak(text, a)
     d = duration(a) + 0.25
-    if sc.get("presentationOnly"):
+    if sc.get("presentationOnly") or (i >= 3 and sc.get("visual")):
         # Presentations must stay on screen long enough to read and understand:
         # a full 30 seconds, and longer if the narration itself runs past 30s
         # (never cut the voice short).
@@ -1667,12 +1702,11 @@ for i, sc in enumerate(plan["scenes"]):
     done = False
     if vis:
         gfx_starts.append(t0)
-        # A scene with no matching approved image is a full-length presentation,
-        # including opening scenes; never try another stock image or paid generation.
-        vis = dict(vis, query=q, _nobg=presentation_only)
+        # Keep the scene's own selected media behind readable presentation text.
+        vis = dict(vis, query=q)
         # Paid AI photo as the presentation background (switch "AI presentation backgrounds"):
         # a real-looking photo of the scene's subject behind the text, instead of a plain color.
-        if presentation_only and plan.get("ai_presentations") and AI_SPENT < 20:
+        if presentation_only and not SCENE_CLIPS and plan.get("ai_presentations") and AI_SPENT < plan.get("image_budget", 20):
             try:
                 subject_ = str(sc.get("subject") or sc.get("query") or "").strip()
                 _img = gen_ai_image("Photorealistic cinematic editorial photo, real lighting, 35mm, United States setting, wide composition "
@@ -1938,7 +1972,7 @@ if plan.get("ai_cards"):
     pool = [c for c in card_spans if c[0] >= 2 and not c[3] and c[2] >= 3.5]
     # Only as many pictures as the video needs: about 1 per 30s, never more than 20.
     # A 45s short gets 1-2; a 10min video gets up to 20.
-    MAX_AI_CARDS = max(0, min(20, int((t0 - 5) // 30)) - AI_SPENT)
+    MAX_AI_CARDS = max(0, min(plan.get("image_budget", 20), int((t0 - 5) // 30)) - AI_SPENT)
     # Evenly spread the pictures across the whole video; scenes with a key number are preferred.
     def _spread(lst, k):
         if k <= 0 or not lst: return []
