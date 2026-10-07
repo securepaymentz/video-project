@@ -1,4 +1,4 @@
-"""stock-engine v106 (installed by Studio)
+"""stock-engine v110 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -576,7 +576,10 @@ def caption_events(text, start, spoken_duration):
             size -= 2
         for active in range(len(phrase)):
             rendered = " ".join((r"{\c&H8DEBD4&}" if j == active else r"{\c&HFFFFFF&}") + safe(word) for j, word in enumerate(phrase))
-            tags = r"{\an5\pos(" + f"{W / 2:.0f},{H * 0.86:.0f}" + r")\fs" + str(size) + "}"
+            # Portrait keeps captions clear of the right-side player controls.
+            cx = W * (0.47 if vertical else 0.5)
+            cy = H * (0.825 if vertical else 0.86)
+            tags = r"{\an5\pos(" + f"{cx:.0f},{cy:.0f}" + r")\fs" + str(size) + "}"
             t = start + (offset + active) * per
             result.append(f"Dialogue: 0,{ass_time(t)},{ass_time(t + per)},Cap,,0,0,0,,{tags}{rendered}")
         offset += len(phrase)
@@ -1138,7 +1141,7 @@ def frame_stat_split(v, t, p, cache):
     txt = f"{pn[0]}{pn[1] * g:,.{pn[2]}f}{pn[3]}" if pn else (v.get("value") or "")
     ctext(d, txt, cache["f"], W * 0.74, H / 2 - cache["f"].size * 0.6, (255, 255, 255, int(255 * a)))
     if v.get("sub"):
-        ctext(d, v["sub"], cache["sf"], W * 0.74, H / 2 + cache["f"].size * 0.6, (230, 200, 185, int(255 * ease(p * 2 - 1))))
+        broadcast_text(d, v["sub"], (W * 0.54, H / 2 + cache["f"].size * 0.6, W * 0.40, H * 0.14), 46 * U, (230, 200, 185, int(255 * ease(p * 2 - 1))), 3)
     return img
 
 
@@ -1227,7 +1230,7 @@ def frame_percent(v, t, p, cache):
     for k, ln in enumerate(lines):
         d.text((W * 0.56, y + k * hf.size * 1.2), ln, font=hf, fill=(255, 255, 255, int(255 * a)))
     if v.get("sub"):
-        d.text((W * 0.56, y + len(lines) * hf.size * 1.2 + 20 * U), v["sub"], font=Fnt(FSERIF, 46 * U), fill=(230, 200, 185, int(255 * ease(p * 2 - 1))))
+        broadcast_text(d, v["sub"], (W * 0.56, y + len(lines) * hf.size * 1.2 + 20 * U, W * 0.38, H * 0.14), 46 * U, (230, 200, 185, int(255 * ease(p * 2 - 1))), 3)
     return img
 
 
@@ -1391,12 +1394,12 @@ def frame_broadcast(v, t, p, cache):
     x, bw = W * 0.075, W * (0.85 if vertical else 0.56)
     top = H * 0.12
     value_y = H * (0.29 if vertical else 0.34)
-    detail_y = value_y + H * 0.19
+    detail_y = value_y + H * (0.23 if v.get("sub") else 0.19)
     footer = " · ".join(s for s in [v.get("location"), ("Source: " + v["source"]) if v.get("source") else None] if s)
     # Size the panel to its content so short scenes don't leave a tall empty box.
     bottom = value_y + H * 0.145
     if v.get("sub"):
-        bottom += H * 0.055
+        bottom += H * 0.10
     if v.get("change"):
         bottom = detail_y + H * 0.125
     if footer:
@@ -1408,7 +1411,7 @@ def frame_broadcast(v, t, p, cache):
     d.rectangle([x, top, x + bar, top + 5 * U], fill=accent)
     broadcast_text(d, v.get("headline", ""), (x, top + H * 0.025, bw, H * 0.12), 70 * U, white)
     broadcast_text(d, v.get("value", ""), (x, value_y, bw, H * 0.12), 154 * U, accent, 1)
-    broadcast_text(d, v.get("sub", ""), (x, value_y + H * 0.125, bw, H * 0.045), 38 * U, muted, 1)
+    broadcast_text(d, v.get("sub", ""), (x, value_y + H * 0.125, bw, H * 0.085), 38 * U, muted, 2)
     if v.get("change"):
         trend = v.get("trend")
         if trend in ("up", "down"):
@@ -1435,7 +1438,8 @@ def opening_location_overlay(fr, t, i):
         return
     # Dedicated top margin above presentation content; no overlap with captions.
     bw, bh = W * (0.34 if vertical else 0.22), H * 0.09
-    x, y = W - bw - W * 0.065, H * 0.02
+    # Upper-right is exclusively reserved for the shared American flag.
+    x, y = W * 0.065, H * 0.02
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(overlay)
     d.rounded_rectangle([x, y, x + bw, y + bh], radius=int(8 * U), fill=(9, 18, 27, 230))
@@ -1466,18 +1470,162 @@ def pct_fmt(v):
     return out
 
 
+# Round-two channel palette: shared by every live presentation.
+DESIGN = {"ground": (11,14,11), "accent": (232,100,45), "type": (242,242,242), "secondary": (45,90,39)}
+
+def american_flag_badge(size):
+    """One deterministic circular badge: 13 stripes, nine alternating star rows (50 stars)."""
+    s = max(120, int(size) * 3)
+    badge = Image.new("RGBA", (s,s), (0,0,0,0))
+    d = ImageDraw.Draw(badge)
+    d.ellipse((0,0,s-1,s-1), fill=(22,32,29,255), outline=(92,105,101,255), width=max(2,s//50))
+    pad = int(s*.085); span = s-2*pad
+    flag = Image.new("RGBA", (span,span), (255,255,255,255)); fd = ImageDraw.Draw(flag)
+    for j in range(13):
+        fd.rectangle((0,round(j*span/13),span,round((j+1)*span/13)),fill=(188,32,50,255) if j%2==0 else (255,255,255,255))
+    cw,ch = span*.51,span*7/13
+    fd.rectangle((0,0,cw,ch),fill=(35,62,112,255))
+    for row in range(9):
+        count=6 if row%2==0 else 5
+        for col in range(count):
+            cx=cw*(col+(.5 if count==6 else 1))/6;cy=ch*(row+.5)/9;r=span*.022
+            pts=[(cx+math.sin(k*math.pi/5)*r*(1 if k%2==0 else .4),cy-math.cos(k*math.pi/5)*r*(1 if k%2==0 else .4)) for k in range(10)]
+            fd.polygon(pts,fill=(255,255,255,255))
+    mask=Image.new("L",(span,span));ImageDraw.Draw(mask).ellipse((0,0,span-1,span-1),fill=255)
+    flag.putalpha(mask);badge.alpha_composite(flag,(pad,pad))
+    return badge.resize((int(size),int(size)),Image.LANCZOS)
+
+
+def round2_flag_overlay(img):
+    size=int(min(W,H)*.095);margin=int(min(W,H)*.025)
+    img.alpha_composite(american_flag_badge(size),(W-margin-size,margin))
+
+
+def round2_base():
+    # Keep the owner's exact-subject media visible; the reference grid is only a light tint.
+    img=Image.new("RGBA",(W,H),DESIGN["ground"]+(90,));d=ImageDraw.Draw(img)
+    step=max(18,int(64*U))
+    for x in range(0,W,step): d.line((x,0,x,H),fill=DESIGN["secondary"]+(34,),width=1)
+    for y in range(0,H,step): d.line((0,y,W,y),fill=DESIGN["secondary"]+(34,),width=1)
+    return img,ImageDraw.Draw(img)
+
+
+def round2_text(d,text,box,size=64,color="type",lines=2):
+    broadcast_text(d,str(text or ""),box,size*U,DESIGN[color]+(255,),lines)
+
+
+def round2_header(d,v):
+    top=H*(.135 if v.get("_opening") and plan.get("opening_location") else .075)
+    round2_text(d,v.get("headline","").upper(),(W*.065,top,W*.735,H*.10),78)
+    d.rectangle((W*.065,H*.245,W*.88,H*.245+max(3,int(6*U))),fill=DESIGN["accent"]+(255,))
+
+
+def round2_frame(v,t,p,cache):
+    img,d=round2_base();typ=v.get("type");g=ease(p*1.6)
+    x,y,bw,bh=W*.065,H*.28,W*.87,H*.40
+    accent=DESIGN["accent"]+(255,);green=DESIGN["secondary"]+(205,);white=DESIGN["type"]+(255,)
+    round2_header(d,v)
+    if typ=="poll":
+        # Uploaded poll references guide the choice layout, never the sample results.
+        round2_text(d,"AUDIENCE QUESTION",(x,H*.19,bw,H*.04),34,color="accent",lines=1)
+        options=[str(s) for s in (v.get("items") or []) if not re.search(r"[\d%$]",str(s))][:3]
+        if options:
+            rh=min(bh/len(options),H*.14)
+            for k,label in enumerate(options):
+                yy=y+k*rh
+                d.rectangle((x,yy,x+bw,yy+rh*.82),fill=accent if k==0 else green)
+                round2_text(d,label.upper(),(x+bw*.035,yy+rh*.09,bw*.93,rh*.64),66,lines=2)
+        round2_text(d,"What do you think? Comment below.",(x,H*.715,bw,H*.050),44)
+    elif typ=="compare":
+        gap=W*.025;cw=(bw-gap)/2
+        panel_height=bh if not vertical else H*.31
+        for k,(key,val,word,col) in enumerate((("left","left_value","THEN",green),("right","right_value","NOW",DESIGN["ground"]+(185,)))):
+            xx=x+k*(cw+gap)
+            d.rectangle((xx,y,xx+cw,y+panel_height),fill=col,outline=accent if k else white,width=max(2,int(3*U)))
+            round2_text(d,(v.get(key) or word).upper(),(xx+cw*.06,y+panel_height*.06,cw*.88,panel_height*.17),56,color="accent" if k else "type")
+            round2_text(d,v.get(val,""),(xx+cw*.06,y+panel_height*.31,cw*.88,panel_height*.40),190,color="accent" if k else "type",lines=1)
+    elif typ in ("chart","ranking","list","timeline","receipt"):
+        rows=[kv(s) for s in (v.get("items") or [])[:5]]
+        if not rows:
+            round2_text(d,v.get("value") or v.get("headline"),(x,y,bw,bh),100)
+        elif typ=="receipt":
+            px=x+bw*.15;pw=bw*.70
+            d.rectangle((px,y,px+pw,y+bh),fill=white)
+            count=len(rows)+(1 if v.get("value") else 0)
+            rh=bh/(count+.5)
+            for k,(lab,val) in enumerate(rows):
+                yy=y+rh*(k+.18)
+                broadcast_text(d,lab,(px+pw*.05,yy,pw*.52,rh*.80),42*U,DESIGN["ground"]+(255,),1)
+                broadcast_text(d,val,(px+pw*.61,yy,pw*.34,rh*.80),46*U,DESIGN["ground"]+(255,),1)
+            if v.get("value"):
+                yy=y+rh*(len(rows)+.18)
+                broadcast_text(d,"TOTAL",(px+pw*.05,yy,pw*.44,rh*.80),44*U,accent,1)
+                broadcast_text(d,v["value"],(px+pw*.52,yy,pw*.43,rh*.80),54*U,accent,1)
+        else:
+            rh=min(bh/len(rows),H*(.09 if vertical else .12))
+            values=[(parse_num(val) or ("",0,0,""))[1] for _,val in rows];mx=max(values+[1])
+            for k,((lab,val),num) in enumerate(zip(rows,values)):
+                yy=y+k*rh;reveal=ease(p*2-k*.13)
+                if reveal<=0:continue
+                if typ=="ranking" and PV==3:
+                    d.rectangle((x,yy,x+bw,yy+rh*.86),fill=accent if k==0 else green)
+                    round2_text(d,str(k+1),(x+bw*.025,yy+rh*.10,bw*.07,rh*.65),50)
+                    round2_text(d,lab.upper(),(x+bw*.12,yy+rh*.10,bw*.53,rh*.65),58,lines=1)
+                    round2_text(d,val,(x+bw*.70,yy+rh*.10,bw*.28,rh*.65),64,lines=1)
+                elif typ=="timeline":
+                    round2_text(d,lab,(x,yy,bw*.19,rh*.77),46,color="accent",lines=1)
+                    round2_text(d,val,(x+bw*.22,yy,bw*.78,rh*.77),44)
+                    d.line((x+bw*.20,yy,x+bw*.20,yy+rh),fill=accent,width=max(2,int(3*U)))
+                elif typ=="list":
+                    d.rectangle((x,yy,x+bw,yy+rh*.84),fill=DESIGN["ground"]+(180,),outline=green,width=max(1,int(2*U)))
+                    round2_text(d,str(k+1),(x+bw*.02,yy+rh*.08,bw*.07,rh*.66),48,color="accent")
+                    round2_text(d,lab+(" — "+val if val else ""),(x+bw*.12,yy+rh*.08,bw*.86,rh*.68),48)
+                else:
+                    round2_text(d,lab.upper(),(x,yy,bw*.31,rh*.72),56,lines=1)
+                    round2_text(d,val,(x+bw*.77,yy,bw*.23,rh*.72),62,lines=1)
+                    if num:
+                        barx=x+bw*.33;bary=yy+rh*.18;barw=bw*.40
+                        d.rectangle((barx,bary,barx+barw,bary+rh*.38),fill=green)
+                        d.rectangle((barx,bary,barx+barw*num/mx*reveal,bary+rh*.38),fill=accent if k==0 else DESIGN["secondary"]+(255,))
+    elif typ=="myth":
+        for k,(tag,text,col) in enumerate((("MYTH",v.get("sub",""),green),("FACT",v.get("headline",""),accent))):
+            yy=y+k*bh*.52
+            d.rectangle((x,yy,x+bw*.19,yy+bh*.25),fill=col)
+            round2_text(d,tag,(x+bw*.02,yy,bw*.15,bh*.23),46)
+            round2_text(d,text,(x+bw*.23,yy,bw*.77,bh*.42),60)
+    elif typ=="percent":
+        r=min(bw*.20,bh*.43);cx=x+r;cy=y+bh*.48
+        d.arc((cx-r,cy-r,cx+r,cy+r),0,360,fill=green,width=max(8,int(30*U)))
+        pn=parse_num(v.get("value",""));pct=min(1,max(0,pn[1]/100)) if pn else 0
+        if pct:d.arc((cx-r,cy-r,cx+r,cy+r),-90,-90+360*pct*g,fill=accent,width=max(8,int(30*U)))
+        round2_text(d,v.get("value",""),(cx-r*.85,cy-r*.42,r*1.7,r*.90),120,lines=1)
+        round2_text(d,v.get("sub") or v.get("headline"),(x+bw*.47,y+bh*.15,bw*.53,bh*.67),68)
+    elif typ=="chapter":
+        round2_text(d,v.get("value") or "",(x,y,bw*.23,bh),180,color="accent",lines=1)
+        round2_text(d,v.get("headline"),(x+bw*.28,y+bh*.12,bw*.72,bh*.73),100)
+    elif typ=="quote":
+        round2_text(d,"“",(x,y,bw*.12,bh*.45),190,color="accent")
+        round2_text(d,v.get("headline"),(x+bw*.14,y,bw*.85,bh),78,lines=3)
+    else:
+        # Prices, broadcasts and audience questions: one strong figure, compact factual context.
+        round2_text(d,v.get("value") or v.get("headline"),(x,y,bw,bh*.63),205,color="accent" if v.get("value") else "type",lines=2)
+        if v.get("sub"):round2_text(d,v["sub"],(x,y+bh*.70,bw,bh*.28),48)
+    if typ in ("chart","ranking","list","timeline","receipt","compare","chapter","quote") and v.get("sub"):
+        detail_y=y+panel_height+H*.025 if typ=="compare" else H*.715
+        round2_text(d,v["sub"],(x,detail_y,bw,H*.050),44)
+    # Progressive entrance, then a restrained moving rule throughout continuous narration.
+    d.line((x,H*.775,x+bw*(.26+.02*math.sin(t*1.3)),H*.775),fill=accent,width=max(2,int(3*U)))
+    img.putalpha(img.getchannel("A").point(lambda a:int(a*min(1,.55+.45*g))))
+    return img
+
+
 def render_visual(v, d, seg, i):
     v = pct_fmt(v)
     typ = v.get("type")
-    if typ in VARIANTS:
-        n_ = _VC.get(typ, 0); _VC[typ] = n_ + 1
-        fn = VARIANTS[typ][(n_ + int(plan.get("presentation_variant") or 0)) % 2]
-    else:
-        fn = {"title": frame_title, "card": frame_card, "ranking": frame_ranking, "percent": frame_percent,
-              "timeline": frame_timeline, "quote": frame_quote, "alert": frame_alert, "receipt": frame_receipt,
-              "myth": frame_myth, "chapter": frame_chapter, "broadcast": frame_broadcast}.get(typ)
-    if not fn:
+    if typ not in ("title", "chart", "card", "stat", "list", "compare", "ranking", "percent", "timeline", "quote", "alert", "receipt", "myth", "chapter", "broadcast", "poll"):
         return False
+    # The old layouts are no longer selected in any creation path.
+    fn = round2_frame
     v = dict(v, _i=i, _opening=(i == 0))
     fdir = os.path.join(work, f"g{i}")
     os.makedirs(fdir, exist_ok=True)
@@ -1490,13 +1638,11 @@ def render_visual(v, d, seg, i):
             t = k / graphic_fps
             p = min(1.0, (0.55 if i == 0 else 0.08) + t / 1.4)
             fr = fn(v, t, p, cache)
-            if v.get("type") != "card":
-                fr.alpha_composite(vignette())
-            # Shrink only the graphic foreground; full-bleed subject media stays
-            # unchanged underneath. Bottom 22% is reserved for captions/branding.
-            content = fr.resize((int(W * 0.78), int(H * 0.78)), Image.LANCZOS)
-            fr = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            fr.alpha_composite(content, (int(W * 0.11), 0))
+            # Layouts without native subtext still show the narrated unit/context.
+            if fn != round2_frame and v.get("sub") and typ in ("chart", "list", "compare", "ranking", "timeline", "receipt", "chapter"):
+                broadcast_text(ImageDraw.Draw(fr), v["sub"], (W * 0.08, H * 0.91, W * 0.84, H * 0.07), 38 * U, (235, 235, 240, 255), 2)
+            # Round-two layouts already reserve the lower caption/brand band.
+            # Never shrink the full composition into a smaller dark rectangle.
             opening_location_overlay(fr, t, i)
             fr.save(os.path.join(fdir, f"f{k:03d}.png"))
     except Exception as e:
@@ -1603,7 +1749,11 @@ def fallback_visual(text, subject=None):
         after = re.split(r"[.!?,;]", text[m.end():])[0].split()[:5]
         if len(after) >= 2:
             head = " ".join(after)[:60].upper()
-        return pct_fmt({"type": "stat", "headline": head, "value": m.group(0), "color": "dark"})
+        unit = re.match(r"\s*((?:per|a|each)\s+(?:gallon|dozen|month|year|week|hour|day|pound|mile|household|person)\b|(?:monthly|annually|yearly|weekly|hourly)\b|of\s+(?:(?:your|their|gross|net|household|monthly|annual)\s+){0,3}(?:income|pay|salary|paycheck)\b)", text[m.end():], re.I)
+        vis = {"type": "stat", "headline": head, "value": m.group(0), "color": "dark"}
+        if unit:
+            vis["sub"] = unit.group(1)
+        return pct_fmt(vis)
     return {"type": "title", "headline": head, "color": "dark"}
 
 
@@ -2207,7 +2357,12 @@ def compact_brand_frame(source):
     """Keep the classic channel mark below captions, not over presentation headings."""
     im = source.convert("RGBA")
     if frame != "classic":
-        return im.resize((W, H), Image.LANCZOS)
+        # Preserve other frame artwork, clearing the caption/brand lane and shared badge.
+        im = im.resize((W, H), Image.LANCZOS)
+        ImageDraw.Draw(im).rectangle((0, int(H * 0.79), W, H), fill=(0, 0, 0, 0))
+        short = min(W, H)
+        ImageDraw.Draw(im).rectangle((W-int(short*.15), 0, W, int(short*.15)), fill=(0, 0, 0, 0))
+        return im
     # Keep only the white channel-name lettering (drop the artwork's big dark bar), then
     # draw a tight, evenly padded pill sized from the video's short side (wide and Shorts).
     area = im.crop((0, 0, int(im.width * 0.75), int(im.height * 0.25)))
@@ -2218,18 +2373,22 @@ def compact_brand_frame(source):
     colored = ImageChops.subtract(hi, lo).point(lambda v: 255 if v >= 60 else 0)
     bright = lo.point(lambda v: 255 if v >= 215 else 0)
     solid = area.getchannel("A").point(lambda a: 255 if a >= 200 else 0)
-    m = ImageChops.multiply(ImageChops.lighter(colored, bright), solid)
+    # Do not include the frame's colored border/rule in the logo bounds: it makes
+    # the actual channel lettering microscopic after fitting the artwork.
+    lettering = ImageChops.multiply(bright, solid)
+    m = lettering if lettering.getbbox() else ImageChops.multiply(colored, solid)
     bounds = m.getbbox()
     if not bounds:
         return Image.new("RGBA", (W, H), (0, 0, 0, 0))
     mark = rgb.crop(bounds).convert("RGBA"); mark.putalpha(m.crop(bounds))
     short = min(W, H)
-    mark.thumbnail((int(W * (0.46 if vertical else 0.24)), int(short * 0.032)), Image.LANCZOS)
+    mark.thumbnail((int(W * (0.64 if vertical else 0.30)), int(short * 0.044)), Image.LANCZOS)
     im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     px_, py_ = int(short * 0.018), int(short * 0.012)
     margin = int(short * 0.03)
-    x, y = W - margin - px_ - mark.width, H - margin - py_ - mark.height
-    ImageDraw.Draw(im).rounded_rectangle((x - px_, y - py_, x + mark.width + px_, y + mark.height + py_), radius=(mark.height + 2 * py_) // 2, fill=(9, 14, 22, 170))
+    x = int(W * 0.065) + px_ if vertical else W - margin - px_ - mark.width
+    y = int(H * 0.90) - mark.height // 2 if vertical else H - margin - py_ - mark.height
+    ImageDraw.Draw(im).rounded_rectangle((x - px_, y - py_, x + mark.width + px_, y + mark.height + py_), radius=(mark.height + 2 * py_) // 2, fill=(9, 14, 22, 220))
     im.alpha_composite(mark, (x, y))
     return im
 
@@ -2259,6 +2418,11 @@ if frame != "none" and os.path.exists(ov):
     im = compact_brand_frame(Image.open(ov))
     ov = os.path.join(work, "frame_safe.png")
     im.save(ov)
+# Burn the same badge into every final video, including videos with no selected frame.
+im = Image.open(ov).convert("RGBA") if frame != "none" and os.path.exists(ov) else Image.new("RGBA", (W, H), (0, 0, 0, 0))
+round2_flag_overlay(im)
+ov = os.path.join(work, "frame_with_flag.png")
+im.save(ov)
 # Overlays written straight onto the footage (no white card):
 #  - AI pictures (switch on): up to 20 photoreal 1K pictures spread across the video, shown full screen for
 #    10s each with the headline and the scene's key number written on the image. With the owner's OpenAI key
@@ -2398,7 +2562,7 @@ def card_chain(src, first_idx):
         cur = nxt
     return chain, cur
 
-if frame != "none" and os.path.exists(ov):
+if os.path.exists(ov):
     cc, last = card_chain("s", 3)
     run(["ffmpeg", "-y", "-i", os.path.join(work, "video.mp4"), "-i", os.path.join(work, "voice.wav"), "-loop", "1", "-i", ov,
          *sum([["-loop", "1", "-i", c] for c in card_inputs], []),
