@@ -1,4 +1,4 @@
-"""stock-engine v113 (installed by Studio)
+"""stock-engine v114 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1520,7 +1520,62 @@ def round2_header(d,v):
     d.rectangle((W*.065,H*.245,W*.88,H*.245+max(3,int(6*U))),fill=DESIGN["accent"]+(255,))
 
 
+def weather_icon(d,condition,x,y,size,t):
+    """Familiar forecast symbols with restrained motion, not generated artwork."""
+    white=DESIGN["type"]+(255,);accent=DESIGN["accent"]+(255,)
+    w=max(2,int(size*.045));bob=math.sin(t*1.8)*size*.015
+    y+=bob
+    if condition=="sun":
+        cx=x+size*.5;cy=y+size*.45;r=size*.22
+        d.ellipse((cx-r,cy-r,cx+r,cy+r),outline=accent,width=w)
+        for k in range(8):
+            a=k*math.pi/4+t*.06
+            d.line((cx+math.cos(a)*r*1.4,cy+math.sin(a)*r*1.4,cx+math.cos(a)*r*1.8,cy+math.sin(a)*r*1.8),fill=accent,width=w)
+        return
+    # One continuous cloud silhouette, with optional animated precipitation.
+    pts=[]
+    for cx,cy,r,a0,a1 in ((.26,.44,.17,180,270),(.48,.32,.25,205,335),(.72,.43,.18,270,360)):
+        pts.extend((x+size*(cx+r*math.cos(math.radians(a))),y+size*(cy+r*math.sin(math.radians(a)))) for a in range(a0,a1+1,5))
+    pts.extend([(x+size*.90,y+size*.56),(x+size*.82,y+size*.63),(x+size*.18,y+size*.63),(x+size*.09,y+size*.54),pts[0]])
+    d.line(pts,fill=white,width=w,joint="curve")
+    if condition in ("rain","snow","storm"):
+        for k in range(3):
+            xx=x+size*(.29+k*.21);yy=y+size*(.72+((t*.45+k*.27)%1)*.16)
+            if condition=="snow":
+                r=size*.035
+                d.line((xx-r,yy,xx+r,yy),fill=white,width=max(2,w//2));d.line((xx,yy-r,xx,yy+r),fill=white,width=max(2,w//2))
+            else:d.line((xx,yy,xx-size*.035,yy+size*.075),fill=white,width=w)
+
+
+def round2_weather(v,t,p):
+    img,d=round2_base();wx=v.get("weather") or {}
+    x=W*.065;bw=W*(.82 if vertical else .38);y=H*.27;bh=H*(.39 if vertical else .32)
+    headline=str(v.get("headline") or "WEATHER").upper()
+    if "WEATHER" not in headline:headline+=" WEATHER"
+    # Opening map label stays above the heading, and the forecast never occupies the caption lane.
+    top=H*(.135 if v.get("_opening") and plan.get("opening_location") else .065)
+    round2_text(d,headline,(x,top,W*.70,H*.095),70,lines=2)
+    d.rectangle((x,y,x+bw,y+bh),fill=DESIGN["ground"]+(185,))
+    d.rectangle((x,y,x+bw*ease(p*1.6),y+max(3,int(5*U))),fill=DESIGN["accent"]+(255,))
+    icon=bw*.28
+    if wx.get("condition"):weather_icon(d,wx["condition"],x+bw*.04,y+bh*.08,icon,t)
+    tx=x+bw*(.36 if wx.get("condition") else .06);tw=bw*(.60 if wx.get("condition") else .88)
+    if wx.get("temp"):
+        round2_text(d,wx["temp"],(tx,y+bh*.06,tw,bh*.33),160,color="accent",lines=1)
+        round2_text(d,wx.get("tempLabel") or "TEMPERATURE",(tx,y+bh*.41,tw,bh*.10),34,lines=1)
+    metrics=[(label,wx[key]) for label,key in (("LOW","low"),("RAIN CHANCE","rain"),("WIND","wind")) if wx.get(key)]
+    if metrics:
+        cw=bw/len(metrics)
+        for k,(label,value) in enumerate(metrics):
+            if t<.25+k*.25:continue
+            xx=x+k*cw
+            round2_text(d,label,(xx+cw*.07,y+bh*.66,cw*.86,bh*.12),30,lines=1)
+            round2_text(d,value,(xx+cw*.07,y+bh*.81,cw*.86,bh*.15),52,lines=1)
+    return img
+
+
 def round2_frame(v,t,p,cache):
+    if v.get("type")=="weather":return round2_weather(v,t,p)
     img,d=round2_base();typ=v.get("type");g=ease(p*1.6)
     x,y,bw,bh=W*.065,H*.28,W*.87,H*.40
     accent=DESIGN["accent"]+(255,);green=DESIGN["secondary"]+(205,);white=DESIGN["type"]+(255,)
@@ -1622,7 +1677,7 @@ def round2_frame(v,t,p,cache):
 def render_visual(v, d, seg, i):
     v = pct_fmt(v)
     typ = v.get("type")
-    if typ not in ("title", "chart", "card", "stat", "list", "compare", "ranking", "percent", "timeline", "quote", "alert", "receipt", "myth", "chapter", "broadcast", "poll"):
+    if typ not in ("title", "chart", "card", "stat", "list", "compare", "ranking", "percent", "timeline", "quote", "alert", "receipt", "myth", "chapter", "broadcast", "poll", "weather"):
         return False
     # The old layouts are no longer selected in any creation path.
     fn = round2_frame
