@@ -1,4 +1,4 @@
-"""stock-engine v101 (installed by Studio)
+"""stock-engine v104 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -615,11 +615,19 @@ def ease(p):
 
 
 # Each presentation preset gets its own backdrop so templates never look alike.
-PV = int(plan.get("presentation_variant") or 0) % 3
+PV = int(plan.get("presentation_variant") or 0) % 11
 PV_BG = [
     {"blue": ((18, 52, 160), (2, 8, 44)), "dark": ((22, 40, 110), (2, 6, 30))},     # prices: deep navy
     {"blue": ((70, 46, 30), (10, 8, 8)), "dark": ((62, 60, 66), (6, 6, 8))},        # comparisons: graphite + amber
     {"blue": ((18, 70, 72), (2, 14, 18)), "dark": ((58, 22, 30), (10, 4, 8))},      # informative: ink teal / burgundy
+    {"blue": ((150, 30, 40), (22, 4, 10)), "dark": ((120, 26, 36), (14, 3, 8))},    # countdown: broadcast crimson
+    {"blue": ((122, 88, 40), (26, 17, 8)), "dark": ((100, 74, 36), (18, 12, 6))},   # then vs now: sepia archive
+    {"blue": ((16, 96, 60), (3, 18, 12)), "dark": ((14, 84, 52), (2, 14, 9))},      # myth vs fact: verdict green
+    {"blue": ((44, 62, 110), (6, 10, 26)), "dark": ((38, 54, 96), (5, 8, 20))},     # map & states: slate blue
+    {"blue": ((24, 58, 48), (4, 10, 8)), "dark": ((20, 48, 40), (3, 8, 6))},        # live board: terminal charcoal
+    {"blue": ((110, 80, 50), (26, 18, 10)), "dark": ((96, 68, 44), (20, 14, 8))},   # documentary: warm paper
+    {"blue": ((84, 44, 140), (12, 6, 26)), "dark": ((72, 38, 124), (10, 5, 20))},   # you vs average: violet
+    {"blue": ((30, 84, 58), (6, 16, 10)), "dark": ((28, 70, 46), (8, 12, 8))},      # paycheck: banknote green
 ][PV]
 
 
@@ -629,7 +637,8 @@ def radial(c1, c2):
             c1, c2 = PV_BG[k_]
     S = 192
     sm = Image.new("RGB", (S, S))
-    cx, cy = (S * 0.5, S * 0.5) if PV == 0 else ((S * 0.25, S * 0.3) if PV == 1 else (S * 0.7, S * 0.2))
+    PV_CX, PV_CY = [(0.5, 0.5), (0.25, 0.3), (0.7, 0.2), (0.3, 0.78), (0.8, 0.55), (0.5, 0.14), (0.2, 0.5), (0.75, 0.82), (0.6, 0.35), (0.4, 0.72), (0.85, 0.2)][PV]
+    cx, cy = S * PV_CX, S * PV_CY
     px = sm.load()
     for y in range(S):
         for x in range(S):
@@ -667,13 +676,78 @@ def grid(img, t, alpha=80):
         for k in range(-H // step - 2, W // step + 3):
             x = k * step + off
             d.polygon([(x, H), (x + 60 * U, H), (x + 60 * U + H * 0.6, 0), (x + H * 0.6, 0)], fill=(255, 190, 120, int(alpha * 0.35)))
-    else:
+    elif PV == 2:
         # informative: editorial ruled lines with a margin rule
         step = int(64 * U)
         off = int((t * 10) % step)
         for y in range(-step, H + step, step):
             d.line([(0, y + off), (W, y + off)], fill=(255, 255, 255, int(alpha * 0.6)), width=max(1, int(1.5 * U)))
         d.line([(W * 0.055, 0), (W * 0.055, H)], fill=(230, 120, 100, int(alpha * 1.4)), width=max(2, int(3 * U)))
+    elif PV == 3:
+        # countdown: rising speed stripes
+        step = int(150 * U)
+        off = (t * 90) % step
+        for k in range(-2, H // step + 3):
+            y = k * step + off
+            d.polygon([(0, y), (W, y - 40 * U), (W, y - 26 * U), (0, y + 14 * U)], fill=(255, 120, 130, int(alpha * 0.4)))
+    elif PV == 4:
+        # then vs now: film scratch flickers
+        seed = int(t * 3)
+        rnd = random.Random(seed)
+        for _ in range(3):
+            x = rnd.randint(int(W * 0.1), int(W * 0.9))
+            d.line([(x, 0), (x + rnd.randint(-6, 6) * U, H)], fill=(255, 235, 200, int(alpha * 0.25)), width=max(1, int(1.2 * U)))
+    elif PV == 5:
+        # myth vs fact: diagonal crosshatch
+        step = int(90 * U)
+        off = (t * 12) % step
+        for k in range(-2, (W + H) // step + 3):
+            s = k * step + off
+            d.line([(s, H), (s + H, 0)], fill=(120, 230, 170, int(alpha * 0.28)), width=max(1, int(1.4 * U)))
+    elif PV == 6:
+        # map & states: drifting graticule curves
+        step = int(170 * U)
+        off = int((t * 9) % step)
+        for x in range(-step, W + step, step):
+            d.arc([x - 80 * U, -60 * U, x + W * 0.5, H + 60 * U], 270, 90, fill=(150, 180, 255, int(alpha * 0.3)), width=max(1, int(1.3 * U)))
+        for y in range(-step, H + step, step):
+            d.line([(0, y + off), (W, y + off)], fill=(150, 180, 255, int(alpha * 0.2)), width=max(1, int(1.1 * U)))
+    elif PV == 7:
+        # live board: terminal scanlines and cursor block
+        step = int(26 * U)
+        off = int((t * 24) % step)
+        for y in range(-step, H + step, step):
+            d.line([(0, y + off), (W, y + off)], fill=(130, 240, 210, int(alpha * 0.22)), width=max(1, int(U)))
+        bx = int((math.sin(t * 2.1) * 0.5 + 0.5) * (W - 60 * U))
+        d.rectangle([bx, H - 44 * U, bx + 34 * U, H - 16 * U], fill=(130, 240, 210, int(alpha * 0.5)))
+    elif PV == 8:
+        # documentary: slow paper flecks
+        rnd = random.Random(7)
+        for _ in range(90):
+            x, y = rnd.randint(0, W), rnd.randint(0, H)
+            drift = (t * 6 * rnd.uniform(0.4, 1.0)) % H
+            yy = (y + drift) % H
+            r = rnd.uniform(0.8, 2.2) * U
+            d.ellipse([x - r, yy - r, x + r, yy + r], fill=(255, 230, 190, int(alpha * 0.2)))
+    elif PV == 10:
+        # paycheck: banknote guilloche waves
+        for k in range(14):
+            pts = []
+            for i in range(0, 61):
+                x = W * i / 60
+                y = H * (k + 0.5) / 14 + math.sin(i * 0.35 + k * 0.7 + t * 0.6) * 18 * U
+                pts.append((x, y))
+            d.line(pts, fill=(200, 235, 170, int(alpha * 0.35)), width=max(1, int(1.2 * U)))
+    else:
+        # you vs average: rising poll bubbles
+        step = int(130 * U)
+        off = (t * 34) % step
+        rnd = random.Random(3)
+        for k in range(26):
+            bx = (k * 97) % W
+            by = H - ((k * step * 0.6 + off * rnd.uniform(0.7, 1.3)) % (H + step))
+            r = (8 + (k % 4) * 5) * U
+            d.ellipse([bx - r, by - r, bx + r, by + r], outline=(210, 170, 255, int(alpha * 0.4)), width=max(1, int(1.3 * U)))
     img.alpha_composite(ov)
 
 
@@ -1018,6 +1092,10 @@ def ctext_block(d, text, path, size, cx, y, maxw, fill, maxl=3, up=False):
 
 
 def kv(s):
+    import re as _re
+    m_ = _re.match(r"^(.*?\S)\s+[\u2014\u2013-]\s+(.*\d.*)$", s or "")
+    if m_ and ":" not in s:
+        return m_.group(1).strip(), m_.group(2).strip()
     if ":" in s:
         a_, b_ = s.split(":", 1)
         return a_.strip(), b_.strip()
@@ -1106,8 +1184,12 @@ def frame_bars(v, t, p, cache, rows=None, highlight_last=True):
         cy = top + gap * k + gap / 2
         d.text((W * 0.08, cy - lf.size * 0.6), lab.upper()[:22], font=lf, fill=(255, 255, 255, int(255 * g)))
         hi = (k == len(rows) - 1) if highlight_last else (k == 0)
-        L = W * 0.46 * (n / mx if mx else 0.5) * g
-        x0 = W * 0.34
+        if not val or not n:
+            continue
+        lw = max(d.textlength(a_.upper()[:22], font=lf) for a_, _ in rows)
+        vw = max(d.textlength(b_ or "", font=vf) for _, b_ in rows)
+        x0 = max(W * 0.34, W * 0.08 + lw + 36 * U)
+        L = max(0.0, W * 0.92 - x0 - vw - 24 * U) * (n / mx if mx else 0.5) * g
         d.rounded_rectangle([x0, cy - bh / 2, x0 + max(L, 6 * U), cy + bh / 2], radius=int(10 * U), fill=ACC if hi else (120, 120, 136))
         d.text((x0 + L + 24 * U, cy - vf.size * 0.6), val, font=vf, fill=(255, 255, 255, int(255 * g)))
     return img
@@ -1222,7 +1304,11 @@ def frame_receipt(v, t, p, cache):
         z = int(14 * U)
         poly = [(x, z if (x // z) % 2 else 0) for x in range(0, pw + z, z)] + [(x, ph - (z if (x // z) % 2 else 0)) for x in range(pw, -z, -z)]
         pd_.polygon(poly, fill=(248, 246, 240, 255))
-        ctext(pd_, v["headline"].upper()[:20], hf, pw / 2, z + hf.size * 0.5, (20, 20, 20))
+        ht_ = v["headline"].upper()[:28]
+        hs_ = 58 * U
+        while hs_ > 24 * U and Fnt(FB, hs_).getlength(ht_) > pw - 50 * U:
+            hs_ -= 2 * U
+        ctext(pd_, ht_, Fnt(FB, hs_), pw / 2, z + hf.size * 0.5, (20, 20, 20))
         y = z + hf.size * 2.2
         for a_, b_ in rows:
             pd_.text((40 * U, y), a_[:18], font=lf, fill=(40, 40, 40))
@@ -1297,7 +1383,7 @@ def frame_broadcast(v, t, p, cache):
     # Crisp native type over the exact-subject media, no invented logo or map.
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    accent = [(75, 210, 220, 255), (255, 169, 105, 255), (240, 111, 125, 255)][PV]
+    accent = [(75, 210, 220, 255), (255, 169, 105, 255), (240, 111, 125, 255), (255, 92, 110, 255), (255, 199, 120, 255), (110, 230, 170, 255), (140, 175, 255, 255), (120, 235, 200, 255), (255, 214, 150, 255), (200, 160, 255, 255), (240, 210, 110, 255)][PV]
     ink, white, muted = (9, 18, 27, 155), (255, 255, 255, 255), (220, 233, 240, 255)
     x, bw = W * 0.075, W * (0.85 if vertical else 0.56)
     top, bottom = H * 0.12, H * (0.68 if vertical else 0.78)
@@ -1356,7 +1442,19 @@ def opening_location_overlay(fr, t, i):
     fr.alpha_composite(overlay, (0, int(3 * U * math.sin(t * 1.4))))
 
 
+_PCT_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(?:percent(?:age)?(?: points?)?|per cent)\b", re.I)
+
+
+def pct_fmt(v):
+    """On-screen text always shows 30% instead of '30 percent' (narration still says it aloud)."""
+    def f(s):
+        return _PCT_RE.sub(lambda m: m.group(1) + "%", s).replace(" %", "%") if isinstance(s, str) else s
+    out = {k: (f(x) if isinstance(x, str) else ([f(y) for y in x] if isinstance(x, list) else x)) for k, x in v.items()}
+    return out
+
+
 def render_visual(v, d, seg, i):
+    v = pct_fmt(v)
     typ = v.get("type")
     if typ in VARIANTS:
         n_ = _VC.get(typ, 0); _VC[typ] = n_ + 1
@@ -1485,9 +1583,15 @@ def reuse_last(i, q, d, seg):
 
 def fallback_visual(text, subject=None):
     """Narration-only presentation (never invents numbers): a spoken figure becomes a stat, else a title."""
-    m = re.search(r"\$\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:million|billion|trillion))?|\b\d+(?:\.\d+)?\s?(?:%|percent)", text, re.I)
+    m = re.search(r"\$\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:million|billion|trillion))?|\b\d+(?:\.\d+)?\s?(?:%|percent(?:age)?)", text, re.I)
     head = " ".join(((subject or "").strip() or re.split(r"[.!?]", text)[0] or text).split()[:7])[:60].upper()
-    return {"type": "stat", "headline": head, "value": m.group(0), "color": "dark"} if m else {"type": "title", "headline": head, "color": "dark"}
+    if m:
+        # Headline names what the number measures ("OF GROSS HOUSEHOLD INCOME"), not the camera subject.
+        after = re.split(r"[.!?,;]", text[m.end():])[0].split()[:5]
+        if len(after) >= 2:
+            head = " ".join(after)[:60].upper()
+        return pct_fmt({"type": "stat", "headline": head, "value": m.group(0), "color": "dark"})
+    return {"type": "title", "headline": head, "color": "dark"}
 
 
 def fill_background(i, q, d, seg):
