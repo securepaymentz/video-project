@@ -1,4 +1,4 @@
-"""stock-engine v116 (installed by Studio)
+"""stock-engine v117 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -2731,6 +2731,49 @@ desc = plan.get("description", "")
 meta = {"title": plan.get("title", "")[:100], "description": desc, "tags": plan.get("tags", [])}
 json.dump(meta, open(os.path.join(os.path.dirname(out), "meta.json"), "w"), ensure_ascii=False)
 
+# Use the same completed subject image for both formats; no second paid generation.
+def compose_thumbnail(source, title, portrait):
+    from PIL import ImageOps
+    source = source.convert("RGB")
+    if portrait:
+        picture = ImageOps.fit(source, (720, 1280), method=Image.Resampling.LANCZOS).filter(ImageFilter.GaussianBlur(28))
+        dark = Image.new("RGBA", picture.size, (0, 0, 0, 135))
+        picture = Image.alpha_composite(picture.convert("RGBA"), dark).convert("RGB")
+        # Contain rather than crop: the exact subject remains fully visible.
+        subject = ImageOps.contain(source, (720, 720), method=Image.Resampling.LANCZOS)
+        picture.paste(subject, ((720 - subject.width) // 2, 420 + (720 - subject.height) // 2))
+    else:
+        picture = ImageOps.fit(source, (1280, 720), method=Image.Resampling.LANCZOS)
+    headline = " ".join(str(title).split()[:6]).upper()
+    if not headline:
+        return picture
+    overlay = Image.new("RGBA", picture.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    if not portrait:
+        draw.rectangle((0, 0, 690, 720), fill=(0, 0, 0, 175))
+    max_width = 600 if portrait else 580
+    # Fit long place/subject names without dropping words from the approved hook.
+    for size in range(72, 11, -1):
+        font = ImageFont.truetype(FB, size)
+        lines, line = [], ""
+        for word in headline.split():
+            candidate = (line + " " + word).strip()
+            if line and draw.textlength(candidate, font=font) > max_width:
+                lines.append(line)
+                line = word
+            else:
+                line = candidate
+        if line:
+            lines.append(line)
+        if len(lines) <= 4 and all(draw.textlength(text, font=font) <= max_width for text in lines):
+            break
+    gap = size + 20
+    top = 100 if portrait else 200
+    for i, text in enumerate(lines):
+        x = (720 - draw.textlength(text, font=font)) / 2 if portrait else 55
+        draw.text((x, top + i * gap), text, font=font, fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0, 255))
+    return Image.alpha_composite(picture.convert("RGBA"), overlay).convert("RGB")
+
 # Generate one topic-specific 1K thumbnail from the approved title, not a generic scene.
 def make_thumbnail():
     key = os.environ.get("LOVABLE_API_KEY", "").strip()
@@ -2780,34 +2823,7 @@ def make_thumbnail():
     import io
     from PIL import ImageOps
     picture = Image.open(io.BytesIO(base64.b64decode(image))).convert("RGB")
-    picture = ImageOps.fit(picture, (1280, 720), method=Image.Resampling.LANCZOS)
-    title_words = str(plan.get("title", "")).split()[:6]
-    headline = " ".join(title_words).upper()
-    if headline:
-        overlay = Image.new("RGBA", picture.size, (0, 0, 0, 0))
-        shade = ImageDraw.Draw(overlay)
-        shade.rectangle((0, 0, 690, 720), fill=(0, 0, 0, 175))
-        font = ImageFont.truetype(FB, 72)
-        lines, line = [], ""
-        for word in headline.split():
-            candidate = (line + " " + word).strip()
-            if line and shade.textlength(candidate, font=font) > 580:
-                lines.append(line); line = word
-            else: line = candidate
-        if line: lines.append(line)
-        while len(lines) > 4:
-            title_words.pop()
-            headline = " ".join(title_words).upper()
-            lines, line = [], ""
-            for word in headline.split():
-                candidate = (line + " " + word).strip()
-                if line and shade.textlength(candidate, font=font) > 580:
-                    lines.append(line); line = word
-                else: line = candidate
-            if line: lines.append(line)
-        for i, text in enumerate(lines):
-            shade.text((55, 200 + i * 95), text, font=font, fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0, 255))
-        picture = Image.alpha_composite(picture.convert("RGBA"), overlay).convert("RGB")
+    picture = compose_thumbnail(picture, plan.get("title", ""), vertical)
     picture.save(os.path.join(os.path.dirname(out), "thumbnail.jpg"), quality=90, optimize=True)
 
 make_thumbnail()
