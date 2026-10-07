@@ -1,4 +1,4 @@
-"""stock-engine v114 (installed by Studio)
+"""stock-engine v115 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1574,8 +1574,33 @@ def round2_weather(v,t,p):
     return img
 
 
+def round2_prices(v,t,p):
+    # The approved weather composition, using only final narrated prices and periods.
+    img,d=round2_base();readout=v.get("prices") or {};metrics=(readout.get("metrics") or [])[:3]
+    x=W*.065;bw=W*(.82 if vertical else .40);y=H*.27
+    bh=H*(.22+max(0,len(metrics)-1)*.075 if vertical else .24+max(0,len(metrics)-1)*.095)
+    top=H*(.135 if v.get("_opening") and plan.get("opening_location") else .065)
+    round2_text(d,str(v.get("headline") or "PRICES").upper(),(x,top,W*.70,H*.095),70,lines=2)
+    d.rectangle((x,y,x+bw,y+bh),fill=DESIGN["ground"]+(185,))
+    d.rectangle((x,y,x+bw*ease(p*1.6),y+max(3,int(5*U))),fill=DESIGN["accent"]+(255,))
+    if not metrics:return img
+    first=metrics[0];pad=bw*.06
+    round2_text(d,first.get("period"),(x+pad,y+H*.022,bw*.88,H*.034),30,lines=1)
+    round2_text(d,first.get("value"),(x+pad,y+H*.062,bw*.88,H*.09),150,color="accent",lines=1)
+    round2_text(d,first.get("unit"),(x+pad,y+H*.16,bw*.88,H*.035),38,lines=1)
+    rh=H*(.075 if vertical else .095)
+    for k,m in enumerate(metrics[1:]):
+        if t<.3+k*.3:continue
+        yy=y+H*.22+k*rh
+        d.line((x+pad,yy-H*.01,x+bw-pad,yy-H*.01),fill=DESIGN["secondary"]+(255,),width=max(2,int(2*U)))
+        round2_text(d,m.get("period"),(x+pad,yy,bw*.43,rh*.65),30,lines=2)
+        round2_text(d,str(m.get("value",""))+" "+str(m.get("unit","")),(x+bw*.51,yy,bw*.43,rh*.65),46,lines=2)
+    return img
+
+
 def round2_frame(v,t,p,cache):
     if v.get("type")=="weather":return round2_weather(v,t,p)
+    if v.get("type")=="price_readout":return round2_prices(v,t,p)
     img,d=round2_base();typ=v.get("type");g=ease(p*1.6)
     x,y,bw,bh=W*.065,H*.28,W*.87,H*.40
     accent=DESIGN["accent"]+(255,);green=DESIGN["secondary"]+(205,);white=DESIGN["type"]+(255,)
@@ -1677,7 +1702,7 @@ def round2_frame(v,t,p,cache):
 def render_visual(v, d, seg, i):
     v = pct_fmt(v)
     typ = v.get("type")
-    if typ not in ("title", "chart", "card", "stat", "list", "compare", "ranking", "percent", "timeline", "quote", "alert", "receipt", "myth", "chapter", "broadcast", "poll", "weather"):
+    if typ not in ("title", "chart", "card", "stat", "list", "compare", "ranking", "percent", "timeline", "quote", "alert", "receipt", "myth", "chapter", "broadcast", "poll", "weather", "price_readout"):
         return False
     # The old layouts are no longer selected in any creation path.
     fn = round2_frame
