@@ -1,4 +1,4 @@
-"""stock-engine v104 (installed by Studio)
+"""stock-engine v106 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -961,17 +961,17 @@ def frame_stat(v, t, p, cache):
     txt = (v.get("value") or "") if v.get("_opening") else (f"{pn[0]}{pn[1] * g:,.{pn[2]}f}{pn[3]}" if pn else (v.get("value") or ""))
     f = cache["f"]
     tw = f.getlength(txt)
-    y = H * 0.42
+    y = H * 0.38
     d.text((W / 2 - tw / 2, y - f.size / 2 + (1 - a) * 40 * U), txt, font=f, fill=(255, 255, 255, int(255 * a)))
     lw = W * 0.3 * ease(p * 1.5 - 0.3)
     if lw > 0:
         uy = y + f.size * 0.62
         d.rectangle([W / 2 - lw / 2, uy, W / 2 + lw / 2, uy + 10 * U], fill=(60, 200, 90) if v.get("trend") != "down" else (220, 50, 50))
-    paste_scaled(img, cache["lab"], W / 2, H * 0.73, 0.9 + 0.1 * ease(p * 2 - 0.6), ease(p * 2 - 0.6))
+    paste_scaled(img, cache["lab"], W / 2, H * 0.56, 0.9 + 0.1 * ease(p * 2 - 0.6), ease(p * 2 - 0.6))
     if cache["sub"] is not None:
         sa = ease(p * 2 - 0.9)
         sw = cache["sub"].getlength(v["sub"])
-        d.text((W / 2 - sw / 2, H * 0.82), v["sub"], font=cache["sub"], fill=(220, 220, 225, int(255 * sa)))
+        d.text((W / 2 - sw / 2, H * 0.64), v["sub"], font=cache["sub"], fill=(220, 220, 225, int(255 * sa)))
     return img
 
 
@@ -1151,20 +1151,23 @@ def frame_grid(v, t, p, cache):
     gap = W * 0.025
     cw = (W * 0.84 - gap * (n - 1)) / n
     tf, nf = Fnt(FB, 46 * U), Fnt(FB, 50 * U)
+    r = 46 * U
+    # Size panels to their content so short labels don't leave tall empty cards.
+    wrapped = [wrap(it, tf, cw * 0.84, 3) for it in items]
+    ph = min(H * 0.5, 40 * U + 2 * r + 40 * U + max((len(ls) for ls in wrapped), default=1) * tf.size * 1.2 + 50 * U)
+    y0 = H * 0.52 - ph / 2
     for k, it in enumerate(items):
         g = ease(p * 1.8 - 0.2 - k * 0.15)
         if g <= 0:
             continue
         x = W * 0.08 + k * (cw + gap)
-        y0 = H * 0.32 + (1 - g) * H * 0.3
-        y1 = y0 + H * 0.5
-        d.rounded_rectangle([x, y0, x + cw, y1], radius=int(22 * U), fill=(246, 244, 238))
-        r = 46 * U
+        yy = y0 + (1 - g) * H * 0.3
+        d.rounded_rectangle([x, yy, x + cw, yy + ph], radius=int(22 * U), fill=(246, 244, 238))
         cx = x + cw / 2
-        d.ellipse([cx - r, y0 + 40 * U, cx + r, y0 + 40 * U + 2 * r], fill=ACC)
-        ctext(d, str(k + 1), nf, cx, y0 + 40 * U + r - nf.size * 0.6, (255, 255, 255))
-        for j, ln in enumerate(wrap(it, tf, cw * 0.84, 3)):
-            ctext(d, ln, tf, cx, y0 + 40 * U + 2 * r + 40 * U + j * tf.size * 1.2, (25, 25, 25))
+        d.ellipse([cx - r, yy + 40 * U, cx + r, yy + 40 * U + 2 * r], fill=ACC)
+        ctext(d, str(k + 1), nf, cx, yy + 40 * U + r - nf.size * 0.6, (255, 255, 255))
+        for j, ln in enumerate(wrapped[k]):
+            ctext(d, ln, tf, cx, yy + 40 * U + 2 * r + 40 * U + j * tf.size * 1.2, (25, 25, 25))
     return img
 
 
@@ -1386,16 +1389,26 @@ def frame_broadcast(v, t, p, cache):
     accent = [(75, 210, 220, 255), (255, 169, 105, 255), (240, 111, 125, 255), (255, 92, 110, 255), (255, 199, 120, 255), (110, 230, 170, 255), (140, 175, 255, 255), (120, 235, 200, 255), (255, 214, 150, 255), (200, 160, 255, 255), (240, 210, 110, 255)][PV]
     ink, white, muted = (9, 18, 27, 155), (255, 255, 255, 255), (220, 233, 240, 255)
     x, bw = W * 0.075, W * (0.85 if vertical else 0.56)
-    top, bottom = H * 0.12, H * (0.68 if vertical else 0.78)
+    top = H * 0.12
+    value_y = H * (0.29 if vertical else 0.34)
+    detail_y = value_y + H * 0.19
+    footer = " · ".join(s for s in [v.get("location"), ("Source: " + v["source"]) if v.get("source") else None] if s)
+    # Size the panel to its content so short scenes don't leave a tall empty box.
+    bottom = value_y + H * 0.145
+    if v.get("sub"):
+        bottom += H * 0.055
+    if v.get("change"):
+        bottom = detail_y + H * 0.125
+    if footer:
+        bottom += H * 0.075
+    bottom = min(bottom + H * 0.02, H * (0.68 if vertical else 0.78))
     d.rectangle([x - W * 0.025, top - H * 0.025, x + bw + W * 0.025, bottom], fill=ink)
     # Subtle movement without repeating the other presets' grid backgrounds.
     bar = bw * (0.75 + 0.05 * math.sin(t * 1.4))
     d.rectangle([x, top, x + bar, top + 5 * U], fill=accent)
     broadcast_text(d, v.get("headline", ""), (x, top + H * 0.025, bw, H * 0.12), 70 * U, white)
-    value_y = H * (0.29 if vertical else 0.34)
     broadcast_text(d, v.get("value", ""), (x, value_y, bw, H * 0.12), 154 * U, accent, 1)
     broadcast_text(d, v.get("sub", ""), (x, value_y + H * 0.125, bw, H * 0.045), 38 * U, muted, 1)
-    detail_y = value_y + H * 0.19
     if v.get("change"):
         trend = v.get("trend")
         if trend in ("up", "down"):
@@ -1406,8 +1419,8 @@ def frame_broadcast(v, t, p, cache):
         dx = x + 42 * U if trend in ("up", "down") else x
         broadcast_text(d, v["change"], (dx, detail_y, bw - (dx - x), H * 0.055), 60 * U, white, 1)
         broadcast_text(d, v.get("period", ""), (x, detail_y + H * 0.06, bw, H * 0.045), 34 * U, muted, 1)
-    footer = " · ".join(s for s in [v.get("location"), ("Source: " + v["source"]) if v.get("source") else None] if s)
-    broadcast_text(d, footer, (x, bottom - H * 0.065, bw, H * 0.055), 28 * U, muted)
+    if footer:
+        broadcast_text(d, footer, (x, bottom - H * 0.075, bw, H * 0.055), 28 * U, muted)
     return img
 
 
