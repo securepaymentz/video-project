@@ -1,4 +1,4 @@
-# stock-engine v104 (installed by Studio)
+# stock-engine v106 (installed by Studio)
 name: Stock Clips Video
 
 on:
@@ -108,6 +108,7 @@ jobs:
 
       - name: Attach generated thumbnail
         if: ${{ github.event.inputs.upload == 'true' && steps.youtube.outputs.video_url != '' }}
+        continue-on-error: true
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
