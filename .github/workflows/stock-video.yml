@@ -1,4 +1,4 @@
-# stock-engine v100 (installed by Studio)
+# stock-engine v101 (installed by Studio)
 name: Stock Clips Video
 
 on:
@@ -94,7 +94,6 @@ jobs:
       - name: Upload to YouTube
         id: youtube
         if: ${{ github.event.inputs.upload == 'true' }}
-        continue-on-error: true
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
@@ -102,8 +101,8 @@ jobs:
           YOUTUBE_PRIVACY: ${{ secrets.YOUTUBE_PRIVACY || 'public' }}
         run: |
           if [ -z "$YOUTUBE_REFRESH_TOKEN" ]; then echo "No YouTube keys - skipping."; exit 0; fi
-          DIR=scripts/youtube; [ -f $DIR/upload_youtube.py ] || DIR=scripts/render
-          python $DIR/upload_youtube.py /tmp/brand-video/daily-video.mp4 /tmp/brand-video/meta.json | tee /tmp/brand-video/upload.log
+          set -o pipefail
+          python scripts/stock/upload_youtube.py /tmp/brand-video/daily-video.mp4 /tmp/brand-video/meta.json | tee /tmp/brand-video/upload.log
           URL=$(grep -o 'https://youtu.be/[A-Za-z0-9_-]*' /tmp/brand-video/upload.log | head -1)
           echo "video_url=$URL" >> "$GITHUB_OUTPUT"
 
