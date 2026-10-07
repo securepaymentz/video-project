@@ -1,8 +1,8 @@
-"""stock-engine v110 (installed by Studio)
+"""stock-engine v113 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
-import base64, json, os, random, re, subprocess, sys, tempfile, time
+import base64, json, math, os, random, re, subprocess, sys, tempfile, time
 import requests
 
 out = sys.argv[1]
@@ -1527,7 +1527,7 @@ def round2_frame(v,t,p,cache):
     round2_header(d,v)
     if typ=="poll":
         # Uploaded poll references guide the choice layout, never the sample results.
-        round2_text(d,"AUDIENCE QUESTION",(x,H*.19,bw,H*.04),34,color="accent",lines=1)
+        round2_text(d,str(plan.get("giveaway_banner") or "AUDIENCE QUESTION").upper(),(x,H*.19,bw,H*.04),34,color="accent",lines=1)
         options=[str(s) for s in (v.get("items") or []) if not re.search(r"[\d%$]",str(s))][:3]
         if options:
             rh=min(bh/len(options),H*.14)
@@ -1866,13 +1866,40 @@ def use_my_clip(i, d, seg, clip):
     return True
 
 
+USED_URLS = set()
+
+
 def make_scene_footage(i, q, d, seg, want_photo=False):
     """Cut between all distinct approved images assigned to this spoken scene."""
     if not MY_CLIPS:
         return make_footage(i, q, d, seg, want_photo)
-    chosen = SCENE_CLIPS or ([CUR_CLIP] if CUR_CLIP else [])
+    chosen = list(SCENE_CLIPS or ([CUR_CLIP] if CUR_CLIP else []))
     if not chosen:
         return fill_background(i, q, d, seg)
+    # Never hold one background longer than ~5s: rotate in more approved clips for long scenes,
+    # preferring ones about this subject, then ones already used earlier in this video (never back-to-back).
+    need = max(1, math.ceil(d / 5.0))
+    if len(chosen) < need:
+        stop = {"the", "and", "for", "with", "price", "prices", "today", "usa", "of", "in", "a", "to"}
+        words = lambda t: {w for w in re.findall(r"[a-z]{3,}", str(t or "").lower()) if w not in stop}
+        want = words(" ".join([str(q or ""), SCENE_SUBJECT or ""]))
+        have = {c.get("url") for c in chosen}
+        match = [c for c in MY_CLIPS if c.get("url") not in have and want & words(" ".join(str(c.get(k, "")) for k in ("label", "query", "subject", "alt")))]
+        earlier = [c for c in MY_CLIPS if c.get("url") in USED_URLS and c.get("url") not in have and c not in match]
+        extra = match + earlier
+        base = list(chosen)
+        k = 0
+        while len(chosen) < need:
+            pool = extra if extra else base
+            nxt = pool[k % len(pool)]
+            k += 1
+            if len(pool) > 1 and chosen and nxt.get("url") == chosen[-1].get("url"):
+                continue
+            chosen.append(nxt)
+            if k > need * 4:
+                break
+    for c in chosen:
+        USED_URLS.add(c.get("url"))
     if len(chosen) == 1:
         try:
             return use_my_clip(i, d, seg, chosen[0])
@@ -2584,21 +2611,7 @@ if _dur < max(3.0, t0 * 0.8):
     raise SystemExit(f"Final video is too short ({_dur:.1f}s of {t0:.1f}s) - render failed")
 
 desc = plan.get("description", "")
-credit_lines = []
-if credits:
-    credit_lines.append("Videos: " + ", ".join(sorted(credits)))
-if photo_credits:
-    credit_lines.append("Photos: " + ", ".join(sorted(photo_credits)) + " on Unsplash")
-if credit_lines:
-    disclosure = "For entertainment and informational purposes only."
-    before, separator, after = desc.partition(disclosure)
-    if separator:
-        ending = separator + after
-        credits_text = "\n\n" + "\n".join(credit_lines)
-        remaining = max(0, 1000 - len(ending) - len(credits_text) - 2)
-        desc = before[:remaining].rstrip() + credits_text + "\n\n" + ending
-    else:
-        desc = desc[:max(0, 1000 - len("\n\n".join(credit_lines)) - 2)].rstrip() + "\n\n" + "\n\n".join(credit_lines)
+# Owner request: no stock-site/author credit lines (Pixabay, Unsplash, etc.) in descriptions.
 meta = {"title": plan.get("title", "")[:100], "description": desc, "tags": plan.get("tags", [])}
 json.dump(meta, open(os.path.join(os.path.dirname(out), "meta.json"), "w"), ensure_ascii=False)
 
