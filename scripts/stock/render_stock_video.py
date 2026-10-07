@@ -1,4 +1,4 @@
-"""stock-engine v115 (installed by Studio)
+"""stock-engine v116 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1525,6 +1525,32 @@ def weather_icon(d,condition,x,y,size,t):
     white=DESIGN["type"]+(255,);accent=DESIGN["accent"]+(255,)
     w=max(2,int(size*.045));bob=math.sin(t*1.8)*size*.015
     y+=bob
+    if condition=="wind":
+        # Bounded gust trails remain visible in wind-only narrated scenes.
+        for k in range(3):
+            yy=y+size*(.27+k*.22);shift=math.sin(t*2.4-k*.8)*size*.035
+            start=x+size*(.10+(k%2)*.09)+shift;end=x+size*(.68-(k%2)*.08)+shift;r=size*.10
+            pts=[(start,yy),(end,yy)]
+            pts.extend((end+r*math.cos(math.radians(a)),yy-r+r*math.sin(math.radians(a))) for a in range(90,-91,-6))
+            d.line(pts,fill=white,width=w,joint="curve")
+        return
+    if condition=="temperature":
+        cx=x+size*.48;bottom=y+size*.73;r=size*.12
+        d.rounded_rectangle((cx-size*.065,y+size*.12,cx+size*.065,bottom),radius=size*.065,outline=white,width=w)
+        d.ellipse((cx-r,bottom-r,cx+r,bottom+r),outline=white,width=w)
+        level=size*(.23+.035*math.sin(t*1.6))
+        d.line((cx,bottom,cx,bottom-level),fill=accent,width=w)
+        for k in range(3):
+            yy=y+size*(.24+k*.12)
+            d.line((cx+size*.12,yy,cx+size*.22,yy),fill=white,width=max(2,w//2))
+        return
+    if condition=="precipitation":
+        cx=x+size*.48;cy=y+size*.62;r=size*.20
+        pts=[(cx,y+size*.12)]
+        pts.extend((cx+r*math.cos(math.radians(a)),cy+r*math.sin(math.radians(a))) for a in range(-35,216,5))
+        pts.append(pts[0]);d.line(pts,fill=white,width=w,joint="curve")
+        d.line((cx-size*.09,cy+size*.02,cx-size*.04,cy+size*.08),fill=accent,width=w)
+        return
     if condition=="sun":
         cx=x+size*.5;cy=y+size*.45;r=size*.22
         d.ellipse((cx-r,cy-r,cx+r,cy+r),outline=accent,width=w)
@@ -1549,7 +1575,10 @@ def weather_icon(d,condition,x,y,size,t):
 
 def round2_weather(v,t,p):
     img,d=round2_base();wx=v.get("weather") or {}
-    x=W*.065;bw=W*(.82 if vertical else .38);y=H*.27;bh=H*(.39 if vertical else .32)
+    metrics=[(label,wx[key],symbol) for label,key,symbol in (("LOW","low","temperature"),("RAIN CHANCE","rain","precipitation"),("WIND","wind","wind")) if wx.get(key)]
+    has_temp=bool(wx.get("temp"))
+    x=W*.065;bw=W*(.82 if vertical else .38);y=H*.27
+    bh=H*((.39 if vertical else .32) if has_temp and metrics else (.23 if vertical else .24))
     headline=str(v.get("headline") or "WEATHER").upper()
     if "WEATHER" not in headline:headline+=" WEATHER"
     # Opening map label stays above the heading, and the forecast never occupies the caption lane.
@@ -1557,20 +1586,27 @@ def round2_weather(v,t,p):
     round2_text(d,headline,(x,top,W*.70,H*.095),70,lines=2)
     d.rectangle((x,y,x+bw,y+bh),fill=DESIGN["ground"]+(185,))
     d.rectangle((x,y,x+bw*ease(p*1.6),y+max(3,int(5*U))),fill=DESIGN["accent"]+(255,))
-    icon=bw*.28
-    if wx.get("condition"):weather_icon(d,wx["condition"],x+bw*.04,y+bh*.08,icon,t)
-    tx=x+bw*(.36 if wx.get("condition") else .06);tw=bw*(.60 if wx.get("condition") else .88)
-    if wx.get("temp"):
+    icon=min(bw*.28,bh*.55)
+    tx=x+bw*.36;tw=bw*.60
+    if has_temp:
+        weather_icon(d,wx.get("condition") or "temperature",x+bw*.04,y+bh*.08,icon,t)
         round2_text(d,wx["temp"],(tx,y+bh*.06,tw,bh*.33),160,color="accent",lines=1)
         round2_text(d,wx.get("tempLabel") or "TEMPERATURE",(tx,y+bh*.41,tw,bh*.10),34,lines=1)
-    metrics=[(label,wx[key]) for label,key in (("LOW","low"),("RAIN CHANCE","rain"),("WIND","wind")) if wx.get(key)]
     if metrics:
         cw=bw/len(metrics)
-        for k,(label,value) in enumerate(metrics):
-            if t<.25+k*.25:continue
+        for k,(label,value,symbol) in enumerate(metrics):
+            if k and t<k*.25:continue
             xx=x+k*cw
-            round2_text(d,label,(xx+cw*.07,y+bh*.66,cw*.86,bh*.12),30,lines=1)
-            round2_text(d,value,(xx+cw*.07,y+bh*.81,cw*.86,bh*.15),52,lines=1)
+            if not has_temp and len(metrics)==1:
+                weather_icon(d,symbol,x+bw*.05,y+bh*.14,min(bw*.27,bh*.70),t)
+                round2_text(d,label,(tx,y+bh*.16,tw,bh*.16),34,lines=1)
+                round2_text(d,value,(tx,y+bh*.42,tw,bh*.39),120,color="accent",lines=1)
+            else:
+                row=y+bh*(.63 if has_temp else .12)
+                sym=min(cw*.20,bh*(.12 if has_temp else .23))
+                weather_icon(d,symbol,xx+cw*.07,row,sym,t)
+                round2_text(d,label,(xx+cw*.31,row,cw*.62,bh*(.13 if has_temp else .23)),28,lines=1)
+                round2_text(d,value,(xx+cw*.07,y+bh*(.81 if has_temp else .47),cw*.86,bh*(.15 if has_temp else .36)),52 if has_temp else 76,lines=1)
     return img
 
 
