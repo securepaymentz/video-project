@@ -1,4 +1,4 @@
-"""stock-engine v117 (installed by Studio)
+"""stock-engine v118 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -33,7 +33,7 @@ PREMIUM = os.environ.get("PREMIUM_VOICE", "true") != "false"
 VOICE_PROVIDER = plan.get("voice_provider", "elevenlabs")
 AUDIO_PROVIDER = plan.get("audio_provider", "elevenlabs")
 USE_HF_VOICE = PREMIUM and VOICE_PROVIDER == "higgsfield" and HF
-USE_EL = EL_KEY and PREMIUM and not USE_HF_VOICE
+USE_EL = EL_KEY and PREMIUM and not USE_HF_VOICE and VOICE_PROVIDER != "studio"
 USE_HF_AUDIO = AUDIO_PROVIDER == "higgsfield" and HF
 
 
@@ -71,8 +71,44 @@ def duration(path):
     return float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path]).strip())
 
 
+STUDIO_ENGINE = None
+
+def studio_speak(text, path):
+    """Offline preset blend; not a clone and never calls a paid narration provider."""
+    global STUDIO_ENGINE
+    if lang != "en":
+        raise RuntimeError("Studio American narration requires English. Select English or another narrator.")
+    from kokoro_onnx import Kokoro
+    import numpy as np
+    import soundfile as sf
+    if STUDIO_ENGINE is None:
+        STUDIO_ENGINE = Kokoro("/tmp/studio-voice/kokoro-v1.0.onnx", "/tmp/studio-voice/voices-v1.0.bin")
+    voice = STUDIO_ENGINE.get_voice_style("am_michael") * 0.7 + STUDIO_ENGINE.get_voice_style("am_fenrir") * 0.3
+    # Bounded sentence/word chunks preserve the entire narration in order.
+    pieces, current = [], []
+    for word in text.split():
+        current.append(word)
+        if len(current) >= 45 and (word.endswith((".", "?", "!")) or len(current) >= 65):
+            pieces.append(" ".join(current)); current = []
+    if current:
+        pieces.append(" ".join(current))
+    audio, sample_rate = [], 24000
+    for piece in pieces:
+        samples, sample_rate = STUDIO_ENGINE.create(piece, voice=voice, speed=1.03, lang="en-us")
+        audio.append(samples)
+    if not audio:
+        raise RuntimeError("Narration text is empty.")
+    wav = path + ".studio.wav"
+    sf.write(wav, np.concatenate(audio), sample_rate)
+    run(["ffmpeg", "-y", "-i", wav, "-c:a", "libmp3lame", "-b:a", "192k", path])
+    os.remove(wav)
+
+
 def speak(text, path):
     global USE_EL, USE_HF_VOICE
+    if VOICE_PROVIDER == "studio":
+        studio_speak(text, path)
+        return
     if USE_HF_VOICE:
         try:
             body = {"text": text, "prompt": text}
