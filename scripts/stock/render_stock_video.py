@@ -1,4 +1,4 @@
-"""stock-engine v119 (installed by Studio)
+"""stock-engine v120 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1770,6 +1770,22 @@ def round2_frame(v,t,p,cache):
                 yy=y+rh*(len(rows)+.18)
                 broadcast_text(d,"TOTAL",(px+pw*.05,yy,pw*.44,rh*.80),44*U,accent,1)
                 broadcast_text(d,v["value"],(px+pw*.52,yy,pw*.43,rh*.80),54*U,accent,1)
+        elif typ=="chart" and len(rows)>=2 and all(parse_num(val) for _,val in rows):
+            # Owner's trend chart: green columns, orange trend line, orange box with the latest spoken figure.
+            nums=[parse_num(val)[1] for _,val in rows];mx=max(nums+[1]);n=len(rows)
+            ch=bh*(.80 if vertical else .86);base=y+ch;cw=bw*(.66 if not vertical else .96)/n
+            for gy in range(5):d.line((x,y+ch*gy/4,x+cw*n,y+ch*gy/4),fill=DESIGN["secondary"]+(70,),width=1)
+            pts=[]
+            for k,((lab,val),num) in enumerate(zip(rows,nums)):
+                rv=ease(p*2-k*.12);hh=ch*.92*num/mx*rv;bx=x+k*cw+cw*.14
+                d.rectangle((bx,base-hh,bx+cw*.72,base),fill=DESIGN["secondary"]+(235,))
+                round2_text(d,lab,(bx-cw*.1,base+H*.008,cw*.92,H*.035),30,lines=1)
+                if rv>0:pts.append((bx+cw*.36,base-hh))
+            if len(pts)>=2:d.line(pts,fill=accent,width=max(3,int(6*U)),joint="curve")
+            if rows and ease(p*2-.5)>0:
+                bxw=bw*(.30 if not vertical else .44);bx0=x+bw-bxw if not vertical else x+bw-bxw;by0=y if not vertical else y-H*.01
+                d.rectangle((bx0,by0,bx0+bxw,by0+bh*.30),fill=accent)
+                round2_text(d,rows[-1][1],(bx0+bxw*.06,by0+bh*.03,bxw*.88,bh*.24),130,lines=1)
         else:
             rh=min(bh/len(rows),H*(.09 if vertical else .12))
             values=[(parse_num(val) or ("",0,0,""))[1] for _,val in rows];mx=max(values+[1])
