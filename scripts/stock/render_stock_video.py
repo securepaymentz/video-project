@@ -1,4 +1,4 @@
-"""stock-engine v118 (installed by Studio)
+"""stock-engine v119 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1670,6 +1670,63 @@ def round2_prices(v,t,p):
     return img
 
 
+def round2_signature(d,v,t,p):
+    """Round-two single-fact compositions; the selected style survives sparse evidence."""
+    x,y,bw,bh=W*.065,H*.28,W*.87,H*.40
+    accent=DESIGN["accent"]+(255,);green=DESIGN["secondary"]+(205,)
+    ground=DESIGN["ground"]+(185,);white=DESIGN["type"]+(255,)
+    value=str(v.get("value") or "");headline=str(v.get("headline") or "")
+    lead=value or headline;detail=str(v.get("sub") or "")
+    g=ease(p*1.6)
+    if PV==0: # Price plate: horizontal emphasis, not a market dashboard.
+        d.rectangle((x,y,x+bw*.70,y+bh*.65),fill=ground)
+        d.rectangle((x,y,x+bw*.70*g,y+max(3,int(5*U))),fill=accent)
+        round2_text(d,lead,(x+bw*.03,y+bh*.07,bw*.64,bh*.50),150,color="accent" if value else "type")
+    elif PV==1: # Comparison framing; do not imply a second value when none is spoken.
+        d.rectangle((x,y,x+bw*.48,y+bh*.72),fill=green)
+        round2_text(d,lead,(x+bw*.03,y+bh*.08,bw*.42,bh*.55),120)
+        round2_text(d,detail,(x+bw*.54,y+bh*.12,bw*.44,bh*.52),58)
+        detail=""
+    elif PV==2: # Compact editorial fact list.
+        d.line((x,y,x,y+bh*.70),fill=accent,width=max(3,int(6*U)))
+        round2_text(d,lead,(x+bw*.05,y,bw*.80,bh*.40),105)
+        if detail:round2_text(d,detail,(x+bw*.05,y+bh*.46,bw*.80,bh*.25),46)
+        detail=""
+    elif PV==3: # Countdown reveal, without fabricating an ordinal rank.
+        d.rectangle((x,y,x+bw,y+bh*.48),fill=accent)
+        round2_text(d,lead,(x+bw*.05,y+bh*.05,bw*.90,bh*.38),110)
+        d.rectangle((x+bw*.75,y+bh*.55,x+bw,y+bh*.58),fill=green)
+    elif PV==4: # Then/now hinge: one supported fact, never an invented past side.
+        d.rectangle((x+bw*.12,y,x+bw*.88,y+bh*.64),fill=ground,outline=green,width=max(2,int(3*U)))
+        d.line((x+bw*.50,y,x+bw*.50,y+bh*.64),fill=accent,width=max(2,int(3*U)))
+        round2_text(d,lead,(x+bw*.17,y+bh*.08,bw*.66,bh*.47),120)
+    elif PV==5: # Verdict composition; no manufactured myth or attributed belief.
+        d.rectangle((x,y,x+bw*.035,y+bh*.68),fill=green)
+        round2_text(d,lead,(x+bw*.08,y+bh*.05,bw*.90,bh*.50),130)
+        d.line((x+bw*.08,y+bh*.61,x+bw*.80*g,y+bh*.61),fill=accent,width=max(3,int(7*U)))
+    elif PV==6: # Place board; no guessed map or location.
+        d.rectangle((x,y,x+bw*.82,y+bh*.62),fill=green)
+        d.rectangle((x,y,x+bw*.04,y+bh*.62),fill=accent)
+        round2_text(d,lead,(x+bw*.08,y+bh*.08,bw*.70,bh*.45),130)
+    elif PV==7: # Market readout: compact grid sized to the actual single fact.
+        d.rectangle((x,y,x+bw*.61,y+bh*.57),fill=ground,outline=green,width=max(2,int(3*U)))
+        round2_text(d,lead,(x+bw*.035,y+bh*.05,bw*.54,bh*.43),145,color="accent" if value else "type")
+        d.line((x,y+bh*.64,x+bw*.61,y+bh*.64),fill=green,width=max(2,int(3*U)))
+    elif PV==8: # Documentary chapter, no invented chapter/data number.
+        d.rectangle((x,y,x+bw*.12,y+bh*.68),fill=accent)
+        round2_text(d,lead,(x+bw*.18,y+bh*.03,bw*.78,bh*.58),110,lines=3)
+    elif PV==9: # Viewer comparison; actual questions handled by the poll layout.
+        round2_text(d,lead,(x,y,bw*.86,bh*.43),140,color="accent" if value else "type")
+        d.line((x,y+bh*.52,x+bw*g,y+bh*.52),fill=green,width=max(5,int(12*U)))
+        d.line((x+bw*.5,y+bh*.48,x+bw*.5,y+bh*.57),fill=accent,width=max(2,int(4*U)))
+    else: # Paycheck receipt: no inferred bill, salary or total.
+        px=x+bw*.17;pw=bw*.66
+        d.rectangle((px,y,px+pw,y+bh*.66),fill=white)
+        broadcast_text(d,lead,(px+pw*.06,y+bh*.06,pw*.88,bh*.39),110*U,DESIGN["ground"]+(255,),2)
+        d.line((px+pw*.06,y+bh*.53,px+pw*.94,y+bh*.53),fill=accent,width=max(2,int(3*U)))
+    if detail:round2_text(d,detail,(x,y+bh*.76,bw,bh*.22),46)
+
+
 def round2_frame(v,t,p,cache):
     if v.get("type")=="weather":return round2_weather(v,t,p)
     if v.get("type")=="price_readout":return round2_prices(v,t,p)
@@ -1699,7 +1756,7 @@ def round2_frame(v,t,p,cache):
     elif typ in ("chart","ranking","list","timeline","receipt"):
         rows=[kv(s) for s in (v.get("items") or [])[:5]]
         if not rows:
-            round2_text(d,v.get("value") or v.get("headline"),(x,y,bw,bh),100)
+            round2_signature(d,v,t,p)
         elif typ=="receipt":
             px=x+bw*.15;pw=bw*.70
             d.rectangle((px,y,px+pw,y+bh),fill=white)
@@ -1759,10 +1816,8 @@ def round2_frame(v,t,p,cache):
         round2_text(d,"“",(x,y,bw*.12,bh*.45),190,color="accent")
         round2_text(d,v.get("headline"),(x+bw*.14,y,bw*.85,bh),78,lines=3)
     else:
-        # Prices, broadcasts and audience questions: one strong figure, compact factual context.
-        round2_text(d,v.get("value") or v.get("headline"),(x,y,bw,bh*.63),205,color="accent" if v.get("value") else "type",lines=2)
-        if v.get("sub"):round2_text(d,v["sub"],(x,y+bh*.70,bw,bh*.28),48)
-    if typ in ("chart","ranking","list","timeline","receipt","compare","chapter","quote") and v.get("sub"):
+        round2_signature(d,v,t,p)
+    if typ in ("chart","ranking","list","timeline","receipt","compare","chapter","quote") and v.get("sub") and (typ not in ("chart","ranking","list","timeline","receipt") or v.get("items")):
         detail_y=y+panel_height+H*.025 if typ=="compare" else H*.715
         round2_text(d,v["sub"],(x,detail_y,bw,H*.050),44)
     # Progressive entrance, then a restrained moving rule throughout continuous narration.
