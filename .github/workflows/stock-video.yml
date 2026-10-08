@@ -1,4 +1,4 @@
-# stock-engine v117 (installed by Studio)
+# stock-engine v118 (installed by Studio)
 name: Stock Clips Video
 
 on:
@@ -42,6 +42,20 @@ jobs:
           sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
           pip install requests edge-tts twikit google-auth google-auth-oauthlib google-api-python-client pillow yt-dlp
           pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install transformers || true
+
+      - name: Install offline Studio narration only when selected
+        env:
+          PLAN: ${{ github.event.inputs.plan }}
+          PLAN_FILE: ${{ github.event.inputs.plan_file }}
+        run: |
+          STUDIO=$(python -c 'import os,json,base64; p=json.load(open(os.environ["PLAN_FILE"])) if os.environ.get("PLAN_FILE") else json.loads(base64.b64decode(os.environ["PLAN"])); print("yes" if p.get("voice_provider")=="studio" else "no")')
+          if [ "$STUDIO" = "yes" ]; then
+            sudo apt-get install -y espeak-ng
+            pip install kokoro-onnx==0.6.1 soundfile
+            mkdir -p /tmp/studio-voice
+            curl -fL --retry 2 https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx -o /tmp/studio-voice/kokoro-v1.0.onnx
+            curl -fL --retry 2 https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin -o /tmp/studio-voice/voices-v1.0.bin
+          fi
 
       - name: Remember clips used in earlier videos
         uses: actions/cache@v4
