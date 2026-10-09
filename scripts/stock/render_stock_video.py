@@ -1,4 +1,4 @@
-"""stock-engine v120 (installed by Studio)
+"""stock-engine v121 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -654,7 +654,7 @@ def ease(p):
 
 
 # Each presentation preset gets its own backdrop so templates never look alike.
-PV = int(plan.get("presentation_variant") or 0) % 11
+PV = int(plan.get("presentation_variant") or 0) % 12
 PV_BG = [
     {"blue": ((18, 52, 160), (2, 8, 44)), "dark": ((22, 40, 110), (2, 6, 30))},     # prices: deep navy
     {"blue": ((70, 46, 30), (10, 8, 8)), "dark": ((62, 60, 66), (6, 6, 8))},        # comparisons: graphite + amber
@@ -667,6 +667,7 @@ PV_BG = [
     {"blue": ((110, 80, 50), (26, 18, 10)), "dark": ((96, 68, 44), (20, 14, 8))},   # documentary: warm paper
     {"blue": ((84, 44, 140), (12, 6, 26)), "dark": ((72, 38, 124), (10, 5, 20))},   # you vs average: violet
     {"blue": ((30, 84, 58), (6, 16, 10)), "dark": ((28, 70, 46), (8, 12, 8))},      # paycheck: banknote green
+    {"blue": ((11, 14, 11), (11, 14, 11)), "dark": ((11, 14, 11), (11, 14, 11))},  # news text: shared editorial ground
 ][PV]
 
 
@@ -676,7 +677,7 @@ def radial(c1, c2):
             c1, c2 = PV_BG[k_]
     S = 192
     sm = Image.new("RGB", (S, S))
-    PV_CX, PV_CY = [(0.5, 0.5), (0.25, 0.3), (0.7, 0.2), (0.3, 0.78), (0.8, 0.55), (0.5, 0.14), (0.2, 0.5), (0.75, 0.82), (0.6, 0.35), (0.4, 0.72), (0.85, 0.2)][PV]
+    PV_CX, PV_CY = [(0.5, 0.5), (0.25, 0.3), (0.7, 0.2), (0.3, 0.78), (0.8, 0.55), (0.5, 0.14), (0.2, 0.5), (0.75, 0.82), (0.6, 0.35), (0.4, 0.72), (0.85, 0.2), (0.5, 0.5)][PV]
     cx, cy = S * PV_CX, S * PV_CY
     px = sm.load()
     for y in range(S):
@@ -1727,7 +1728,32 @@ def round2_signature(d,v,t,p):
     if detail:round2_text(d,detail,(x,y+bh*.76,bw,bh*.22),46)
 
 
+def round2_news_text(v,t,p):
+    """One spoken point at a time, never a wall of article text or a data dashboard."""
+    img,d=round2_base()
+    x=W*.065;bw=W*(.87 if vertical else .62)
+    top=H*(.135 if v.get("_opening") and plan.get("opening_location") else .075)
+    accent=DESIGN["accent"]+(255,);green=DESIGN["secondary"]+(220,)
+    round2_text(d,v.get("headline",""),(x,top,W*.72,H*.10),64,lines=2)
+    # Split only at sentence boundaries, preserving every approved spoken word.
+    text=" ".join(str(s) for s in (v.get("items") or [v.get("sub") or v.get("headline") or ""]))
+    sentences=[s.strip() for s in re.split(r"(?<=[.!?])\s+",text) if s.strip()] or [text]
+    weights=[max(1,len(s.split())) for s in sentences];total=sum(weights)
+    at=min(.999,max(0,p))*total;before=0;point=sentences[-1]
+    for sentence,weight in zip(sentences,weights):
+        if at<before+weight:
+            point=sentence;break
+        before+=weight
+    y=H*.28;bh=H*(.32 if vertical else .38)
+    d.rectangle((x,y,x+bw,y+bh),fill=DESIGN["ground"]+(195,))
+    d.rectangle((x,y,x+max(3,int(6*U)),y+bh),fill=green)
+    round2_text(d,point,(x+bw*.055,y+bh*.09,bw*.89,bh*.80),78,lines=6 if vertical else 4)
+    d.line((x,y+bh+H*.025,x+bw*ease(p),y+bh+H*.025),fill=accent,width=max(3,int(5*U)))
+    return img
+
+
 def round2_frame(v,t,p,cache):
+    if PV==11 or v.get("type")=="news_text":return round2_news_text(v,t,p)
     if v.get("type")=="weather":return round2_weather(v,t,p)
     if v.get("type")=="price_readout":return round2_prices(v,t,p)
     img,d=round2_base();typ=v.get("type");g=ease(p*1.6)
@@ -1845,7 +1871,7 @@ def round2_frame(v,t,p,cache):
 def render_visual(v, d, seg, i):
     v = pct_fmt(v)
     typ = v.get("type")
-    if typ not in ("title", "chart", "card", "stat", "list", "compare", "ranking", "percent", "timeline", "quote", "alert", "receipt", "myth", "chapter", "broadcast", "poll", "weather", "price_readout"):
+    if typ not in ("title", "chart", "card", "stat", "list", "compare", "ranking", "percent", "timeline", "quote", "alert", "receipt", "myth", "chapter", "broadcast", "poll", "weather", "price_readout", "news_text"):
         return False
     # The old layouts are no longer selected in any creation path.
     fn = round2_frame
@@ -1859,7 +1885,7 @@ def render_visual(v, d, seg, i):
     try:
         for k in range(anim):
             t = k / graphic_fps
-            p = min(1.0, (0.55 if i == 0 else 0.08) + t / 1.4)
+            p = min(1.0, t / max(d, .1)) if PV==11 else min(1.0, (0.55 if i == 0 else 0.08) + t / 1.4)
             fr = fn(v, t, p, cache)
             # Layouts without native subtext still show the narrated unit/context.
             if fn != round2_frame and v.get("sub") and typ in ("chart", "list", "compare", "ranking", "timeline", "receipt", "chapter"):
