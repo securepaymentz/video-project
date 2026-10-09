@@ -1,4 +1,4 @@
-"""stock-engine v129 (installed by Studio)
+"""stock-engine v130 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1758,7 +1758,8 @@ def round2_news_ticker(img,t):
 def round2_news_text(v,t,p):
     """One spoken point at a time, never a wall of article text or a data dashboard."""
     img,d=round2_base()
-    x=W*.065;bw=W*(.87 if vertical else .62)
+    # Recaps reserve the right third for the creator's unobstructed face.
+    x=W*.065;bw=W*(.87 if vertical else (.55 if PV==12 else .62))
     top=H*(.135 if v.get("_opening") and plan.get("opening_location") else .075)
     accent=DESIGN["accent"]+(255,);green=DESIGN["secondary"]+(220,)
     round2_text(d,v.get("headline",""),(x,top,W*.72,H*.10),64,lines=2)
