@@ -1,4 +1,4 @@
-"""stock-engine v126 (installed by Studio)
+"""stock-engine v128 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -668,6 +668,7 @@ PV_BG = [
     {"blue": ((84, 44, 140), (12, 6, 26)), "dark": ((72, 38, 124), (10, 5, 20))},   # you vs average: violet
     {"blue": ((30, 84, 58), (6, 16, 10)), "dark": ((28, 70, 46), (8, 12, 8))},      # paycheck: banknote green
     {"blue": ((11, 14, 11), (11, 14, 11)), "dark": ((11, 14, 11), (11, 14, 11))},  # news text: shared editorial ground
+    {"blue": ((30, 26, 24), (8, 6, 6)), "dark": ((26, 22, 20), (6, 5, 5))},       # youtuber recap: studio charcoal + warm orange
 ][PV]
 
 
@@ -677,7 +678,7 @@ def radial(c1, c2):
             c1, c2 = PV_BG[k_]
     S = 192
     sm = Image.new("RGB", (S, S))
-    PV_CX, PV_CY = [(0.5, 0.5), (0.25, 0.3), (0.7, 0.2), (0.3, 0.78), (0.8, 0.55), (0.5, 0.14), (0.2, 0.5), (0.75, 0.82), (0.6, 0.35), (0.4, 0.72), (0.85, 0.2), (0.5, 0.5)][PV]
+    PV_CX, PV_CY = [(0.5, 0.5), (0.25, 0.3), (0.7, 0.2), (0.3, 0.78), (0.8, 0.55), (0.5, 0.14), (0.2, 0.5), (0.75, 0.82), (0.6, 0.35), (0.4, 0.72), (0.85, 0.2), (0.5, 0.5), (0.5, 0.42)][PV]
     cx, cy = S * PV_CX, S * PV_CY
     px = sm.load()
     for y in range(S):
@@ -1426,7 +1427,7 @@ def frame_broadcast(v, t, p, cache):
     # Crisp native type over the exact-subject media, no invented logo or map.
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    accent = [(75, 210, 220, 255), (255, 169, 105, 255), (240, 111, 125, 255), (255, 92, 110, 255), (255, 199, 120, 255), (110, 230, 170, 255), (140, 175, 255, 255), (120, 235, 200, 255), (255, 214, 150, 255), (200, 160, 255, 255), (240, 210, 110, 255)][PV]
+    accent = [(75, 210, 220, 255), (255, 169, 105, 255), (240, 111, 125, 255), (255, 92, 110, 255), (255, 199, 120, 255), (110, 230, 170, 255), (140, 175, 255, 255), (120, 235, 200, 255), (255, 214, 150, 255), (200, 160, 255, 255), (240, 210, 110, 255), (235, 235, 230, 255), (255, 150, 80, 255)][PV]
     ink, white, muted = (9, 18, 27, 155), (255, 255, 255, 255), (220, 233, 240, 255)
     x, bw = W * 0.075, W * (0.85 if vertical else 0.56)
     top = H * 0.12
@@ -2128,8 +2129,11 @@ def use_my_clip(i, d, seg, clip):
         photo_credits.add(clip.get("author") or "Stock")
         frames = int(d * 30) + 1
         z = "min(1+0.0004*on,1.06)" if i % 2 == 0 else "max(1.06-0.0004*on,1)"
+        # With only one approved image, each scene frames a different region (center, left,
+        # right, upper, lower) so the video never feels frozen on a single still.
+        fx, fy = [(0.5, 0.5), (0.28, 0.42), (0.72, 0.4), (0.4, 0.7), (0.62, 0.3), (0.5, 0.62)][i % 6]
         kb = (f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},"
-              f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps=30,setsar=1")
+              f"zoompan=z='{z}':x='iw*{fx}-(iw/zoom/2)':y='ih*{fy}-(ih/zoom/2)':d={frames}:s={W}x{H}:fps=30,setsar=1")
         run(["ffmpeg", "-y", "-loop", "1", "-i", raw, "-t", f"{d:.2f}", "-vf", kb, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
     else:
         credits.add(clip.get("author") or "Stock")
