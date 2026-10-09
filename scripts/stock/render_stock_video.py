@@ -1,4 +1,4 @@
-"""stock-engine v122 (installed by Studio)
+"""stock-engine v123 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -2938,7 +2938,13 @@ def compose_thumbnail(source, title, portrait):
         draw.text((x, top + i * gap), text, font=font, fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0, 255))
     return Image.alpha_composite(picture.convert("RGBA"), overlay).convert("RGB")
 
-# Generate one topic-specific 1K thumbnail from the approved title, not a generic scene.
+# Thumbnail upgrade is independent of presentation-background spending consent.
+def thumbnail_request(prompt, upgrade):
+    return {"model": "openai/gpt-image-2.5-sunburst", "prompt": prompt,
+            "size": "2048x1152" if upgrade else "1536x1024",
+            "quality": "medium" if upgrade else "low", "stream": True, "partial_images": 1}
+
+# Generate one topic-specific thumbnail from the approved title, not a generic scene.
 def make_thumbnail():
     key = os.environ.get("LOVABLE_API_KEY", "").strip()
     if not key:
@@ -2951,8 +2957,13 @@ def make_thumbnail():
               "leave the left third dark and visually quiet for a short title overlay. Video title: " + str(plan.get("title", ""))[:100] +
               ". Opening scene: " + str((plan.get("scenes") or [{}])[0].get("text", ""))[:200])
     url = "https://ai.gateway.lovable.dev/v1/images/generations"
-    body = {"model": "openai/gpt-image-2.5-sunburst", "prompt": prompt,
-            "size": "1536x1024", "quality": "low", "stream": True, "partial_images": 1}
+    upgrade = plan.get("thumbnail_chatgpt_2k") is True
+    if upgrade:
+        prompt += (". Professional premium US news/economy cover photography: literal story subject clearly visible on the right, "
+                   "crisp detail, cinematic but realistic lighting, strong editorial contrast and restrained orange/green accents. "
+                   "Keep the top-right corner uncluttered for the channel's American-flag badge, added separately. "
+                   "Do not draw a flag, logos or text; do not imply a catastrophe or result the story does not support.")
+    body = thumbnail_request(prompt, upgrade)
     headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
     def request(payload, streamed):
         response = requests.post(url, headers=headers, json=payload, stream=streamed)
@@ -2988,7 +2999,19 @@ def make_thumbnail():
     from PIL import ImageOps
     picture = Image.open(io.BytesIO(base64.b64decode(image))).convert("RGB")
     picture = compose_thumbnail(picture, plan.get("title", ""), vertical)
-    picture.save(os.path.join(os.path.dirname(out), "thumbnail.jpg"), quality=90, optimize=True)
+    if upgrade:
+        picture = picture.resize((1440, 2560) if vertical else (2048, 1152), Image.Resampling.LANCZOS).convert("RGBA")
+        badge_size = int(min(picture.size) * .12)
+        margin = int(min(picture.size) * .03)
+        picture.alpha_composite(american_flag_badge(badge_size), (picture.width - margin - badge_size, margin))
+        picture = picture.convert("RGB")
+    path = os.path.join(os.path.dirname(out), "thumbnail.jpg")
+    for jpeg_quality in (90, 82, 74, 65, 55, 45):
+        picture.save(path, quality=jpeg_quality, optimize=True)
+        if os.path.getsize(path) < 2 * 1024 * 1024:
+            break
+    else:
+        raise RuntimeError("Thumbnail exceeds YouTube's 2 MB upload limit")
 
 make_thumbnail()
 print("Done:", out, f"{t0:.1f}s")
