@@ -1,4 +1,4 @@
-"""stock-engine v123 (installed by Studio)
+"""stock-engine v126 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -654,7 +654,7 @@ def ease(p):
 
 
 # Each presentation preset gets its own backdrop so templates never look alike.
-PV = int(plan.get("presentation_variant") or 0) % 12
+PV = int(plan.get("presentation_variant") or 0) % 13
 PV_BG = [
     {"blue": ((18, 52, 160), (2, 8, 44)), "dark": ((22, 40, 110), (2, 6, 30))},     # prices: deep navy
     {"blue": ((70, 46, 30), (10, 8, 8)), "dark": ((62, 60, 66), (6, 6, 8))},        # comparisons: graphite + amber
@@ -1781,7 +1781,7 @@ def round2_news_text(v,t,p):
 
 
 def round2_frame(v,t,p,cache):
-    if PV==11 or v.get("type")=="news_text":return round2_news_text(v,t,p)
+    if PV in (11,12) or v.get("type")=="news_text":return round2_news_text(v,t,p)
     if v.get("type")=="weather":return round2_weather(v,t,p)
     if v.get("type")=="price_readout":return round2_prices(v,t,p)
     img,d=round2_base();typ=v.get("type");g=ease(p*1.6)
@@ -2011,7 +2011,7 @@ def reuse_last(i, q, d, seg):
     if not LAST_FOOTAGE or not os.path.exists(LAST_FOOTAGE):
         return False
     F = max(1, int(d * 30))
-    zp = f"zoompan=z='min(1.08+0.0009*on,1.2)':x='(iw-iw/zoom)*on/{F}':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
+    zp = f"zoompan=z='min(1+0.0004*on,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
     run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", LAST_FOOTAGE, "-t", f"{d:.2f}", "-an", "-vf", zp,
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
     return True
@@ -2060,7 +2060,7 @@ def emergency_background(i, q, d, seg):
             img.save(p, quality=88)
             AI_SPENT += 1
             F = max(1, int(d * 30))
-            zp = f"zoompan=z='min(1.06+0.0009*on,1.2)':x='(iw-iw/zoom)*on/{F}':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
+            zp = f"zoompan=z='min(1+0.0004*on,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
             run(["ffmpeg", "-y", "-loop", "1", "-i", p, "-t", f"{d:.2f}", "-vf", zp,
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
             print(f"Scene {i + 1} background: emergency AI photo")
@@ -2086,7 +2086,7 @@ def emergency_background(i, q, d, seg):
         p = os.path.join(work, f"emg{i}.jpg")
         base.save(p, quality=88)
         F = max(1, int(d * 30))
-        zp = f"zoompan=z='min(1.04+0.0008*on,1.15)':x='(iw-iw/zoom)*on/{F}':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
+        zp = f"zoompan=z='min(1+0.0004*on,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
         run(["ffmpeg", "-y", "-loop", "1", "-i", p, "-t", f"{d:.2f}", "-vf", zp,
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
         print(f"Scene {i + 1} background: local styled backdrop")
@@ -2127,7 +2127,7 @@ def use_my_clip(i, d, seg, clip):
     if ext == "jpg":
         photo_credits.add(clip.get("author") or "Stock")
         frames = int(d * 30) + 1
-        z = "min(1+0.0012*on,1.25)" if i % 2 == 0 else "max(1.25-0.0012*on,1)"
+        z = "min(1+0.0004*on,1.06)" if i % 2 == 0 else "max(1.06-0.0004*on,1)"
         kb = (f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},"
               f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps=30,setsar=1")
         run(["ffmpeg", "-y", "-loop", "1", "-i", raw, "-t", f"{d:.2f}", "-vf", kb, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
@@ -2137,7 +2137,7 @@ def use_my_clip(i, d, seg, clip):
         try: L = duration(raw)
         except Exception: L = 0
         ss = (i * 3.7) % max(0.1, L - d) if L > d + 1 else 0
-        zp = "zoompan=z='min(1+0.0011*on,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'" if i % 2 == 0 else "zoompan=z='max(1.15-0.0011*on,1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+        zp = "zoompan=z='min(1+0.0004*on,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'" if i % 2 == 0 else "zoompan=z='max(1.06-0.0004*on,1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
         run(["ffmpeg", "-y", "-ss", f"{ss:.2f}", "-stream_loop", "-1", "-i", raw, "-t", f"{d:.3f}", "-an", "-vf", vf + "," + zp + f":d=1:s={W}x{H}:fps=30,setsar=1",
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
     return True
@@ -2244,14 +2244,10 @@ def search_footage(i, q, d, seg, want_photo):
             pd = d / len(picks)
             F = max(1, int(pd * 30))
             mv = (i + k) % 4
-            if mv == 0:
-                zp = "zoompan=z='min(1+0.0011*on,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-            elif mv == 1:
-                zp = "zoompan=z='max(1.15-0.0011*on,1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-            elif mv == 2:
-                zp = f"zoompan=z=1.12:x='(iw-iw/zoom)*on/{F}':y='ih/2-(ih/zoom/2)'"
+            if mv % 2 == 0:
+                zp = "zoompan=z='min(1+0.0004*on,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
             else:
-                zp = f"zoompan=z=1.12:x='(iw-iw/zoom)*(1-on/{F})':y='ih/2-(ih/zoom/2)'"
+                zp = "zoompan=z='max(1.06-0.0004*on,1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
             part = os.path.join(work, f"c{i}_{k}_{int(d * 100)}.mp4")
             run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", raw, "-t", f"{pd:.3f}", "-an", "-vf", vf + "," + zp + f":d=1:s={W}x{H}:fps=30,setsar=1",
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", part])
@@ -2272,8 +2268,8 @@ def search_footage(i, q, d, seg, want_photo):
             open(img, "wb").write(requests.get(url, timeout=60).content)
             photo_credits.add(author)
             frames = int(d * 30) + 1
-            z = "min(1+0.0012*on,1.25)" if i % 2 == 0 else "max(1.25-0.0012*on,1)"
-            px = "iw/2-(iw/zoom/2)" if i % 3 else f"(iw-iw/zoom)*on/{frames}"
+            z = "min(1+0.0004*on,1.06)" if i % 2 == 0 else "max(1.06-0.0004*on,1)"
+            px = "iw/2-(iw/zoom/2)"
             kb = (f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},"
                   f"zoompan=z='{z}':x='{px}':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps=30,setsar=1")
             run(["ffmpeg", "-y", "-loop", "1", "-i", img, "-t", f"{d:.2f}", "-vf", kb,
@@ -2472,7 +2468,7 @@ for i, sc in enumerate(plan["scenes"]):
                 _ip = os.path.join(work, f"aibg{i}.png"); _img.convert("RGB").save(_ip)
                 _frames = int((d + 0.1) * 30) + 1
                 _kb = (f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},"
-                       f"zoompan=z='min(zoom+0.0006,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={_frames}:s={W}x{H}:fps=30,setsar=1")
+                       f"zoompan=z='min(zoom+0.0003,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={_frames}:s={W}x{H}:fps=30,setsar=1")
                 _bp = os.path.join(work, f"aibg{i}.mp4")
                 run(["ffmpeg", "-y", "-loop", "1", "-i", _ip, "-t", f"{d + 0.1:.2f}", "-vf", _kb,
                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", _bp])
@@ -2896,6 +2892,14 @@ meta = {"title": plan.get("title", "")[:100], "description": desc, "tags": plan.
 json.dump(meta, open(os.path.join(os.path.dirname(out), "meta.json"), "w"), ensure_ascii=False)
 
 # Use the same completed subject image for both formats; no second paid generation.
+def thumbnail_headline(title):
+    title = re.sub(r"\s+", " ", str(title)).strip()
+    # Complete clauses, never arbitrary first-word truncation or invented promises.
+    clauses = [c.strip(" .!?") for c in re.split(r"\s+[—–|]\s+|:\s+", title) if c.strip(" .!?")]
+    numbers = re.findall(r"\d[\d,.%]*", title)
+    safe = [c for c in clauses if 2 <= len(c.split()) <= 6 and all(n in c for n in numbers)]
+    return (min(safe, key=len) if safe else title).upper()
+
 def compose_thumbnail(source, title, portrait):
     from PIL import ImageOps
     source = source.convert("RGB")
@@ -2908,16 +2912,19 @@ def compose_thumbnail(source, title, portrait):
         picture.paste(subject, ((720 - subject.width) // 2, 420 + (720 - subject.height) // 2))
     else:
         picture = ImageOps.fit(source, (1280, 720), method=Image.Resampling.LANCZOS)
-    headline = " ".join(str(title).split()[:6]).upper()
+    headline = thumbnail_headline(title)
     if not headline:
         return picture
     overlay = Image.new("RGBA", picture.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     if not portrait:
-        draw.rectangle((0, 0, 690, 720), fill=(0, 0, 0, 175))
-    max_width = 600 if portrait else 580
+        # Soft fade rather than a hard panel covering the subject.
+        for x in range(760):
+            alpha = round(215 * max(0, 1 - x / 760) ** .65)
+            draw.line((x, 0, x, 720), fill=(0, 0, 0, alpha))
+    max_width = 620 if portrait else 560
     # Fit long place/subject names without dropping words from the approved hook.
-    for size in range(72, 11, -1):
+    for size in range(100 if portrait else 96, 11, -1):
         font = ImageFont.truetype(FB, size)
         lines, line = [], ""
         for word in headline.split():
@@ -2929,13 +2936,14 @@ def compose_thumbnail(source, title, portrait):
                 line = candidate
         if line:
             lines.append(line)
-        if len(lines) <= 4 and all(draw.textlength(text, font=font) <= max_width for text in lines):
+        if len(lines) <= 4 and all(draw.textlength(text, font=font) <= max_width for text in lines) and len(lines) * (size + 14) <= (300 if portrait else 460):
             break
-    gap = size + 20
-    top = 100 if portrait else 200
+    gap = size + 14
+    top = 90 if portrait else (720 - len(lines) * gap) // 2
     for i, text in enumerate(lines):
         x = (720 - draw.textlength(text, font=font)) / 2 if portrait else 55
-        draw.text((x, top + i * gap), text, font=font, fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0, 255))
+        color = (255, 206, 70, 255) if i == len(lines) - 1 else (255, 255, 255, 255)
+        draw.text((x, top + i * gap), text, font=font, fill=color, stroke_width=3, stroke_fill=(0, 0, 0, 255))
     return Image.alpha_composite(picture.convert("RGBA"), overlay).convert("RGB")
 
 # Thumbnail upgrade is independent of presentation-background spending consent.
@@ -2949,12 +2957,18 @@ def make_thumbnail():
     key = os.environ.get("LOVABLE_API_KEY", "").strip()
     if not key:
         raise RuntimeError("AI image key is missing; thumbnail was not generated")
-    prompt = ("Create a photorealistic, editorial YouTube thumbnail for a US documentary. "
-              "Show the literal subject and location of this video with an instantly legible visual story, "
-              "one clear focal point, expressive real lighting and strong contrast. No unrelated objects, "
+    prompt = ("Create a photorealistic editorial YouTube cover readable instantly at 160 pixels wide. "
+              "Show the exact literal subject and supported US location, not a generic economy scene. "
+              "ONE large sharp story object or recognizable place occupies the right half, fully visible, "
+              "with simple surroundings, strong subject/background separation and realistic directional light. "
+              "Communicate the everyday concern supported by this story, without exaggerated disaster imagery. "
+              "No collages, tiny charts, decorative icons, fake shocked faces, arrows or unrelated objects; "
               "no cartoons, nudity, insects, invented numbers or misleading claims. "
               "No documents, bills, receipts, signs, writing, letters, or numbers anywhere in the image; "
-              "leave the left third dark and visually quiet for a short title overlay. Video title: " + str(plan.get("title", ""))[:100] +
+              "leave the left 45 percent dark and quiet for text; keep the subject outside that lane. "
+              "Keep the top-right 15 percent quiet for the real flag badge and bottom-right clear for duration. "
+              "Do not draw any flag or logo. Approved cover words, added separately: " + thumbnail_headline(plan.get("title", "")) +
+              ". Video title: " + str(plan.get("title", ""))[:100] +
               ". Opening scene: " + str((plan.get("scenes") or [{}])[0].get("text", ""))[:200])
     url = "https://ai.gateway.lovable.dev/v1/images/generations"
     upgrade = plan.get("thumbnail_chatgpt_2k") is True
