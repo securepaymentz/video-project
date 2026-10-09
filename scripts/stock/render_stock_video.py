@@ -1,4 +1,4 @@
-"""stock-engine v128 (installed by Studio)
+"""stock-engine v129 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1735,11 +1735,10 @@ def round2_news_ticker(img,t):
     d=ImageDraw.Draw(img)
     x=W*.065;y=H*(.885 if vertical else .895);bh=H*(.055 if vertical else .075)
     logo_w=W*(.30 if vertical else .21);right=W*(.82 if vertical else .95)
+    if not items:return
     d.rectangle((x-W*.012,y-H*.008,right,y+bh+H*.008),fill=DESIGN["ground"]+(215,))
-    broadcast_text(d,"THE INFLATION",(x,y,logo_w*.92,bh*.42),34*U,DESIGN["type"]+(255,),1)
-    broadcast_text(d,"ECONOMIST",(x,y+bh*.48,logo_w*.92,bh*.42),34*U,DESIGN["type"]+(255,),1)
-    sx=x+logo_w
-    d.line((sx,y,sx,y+bh),fill=DESIGN["accent"]+(255,),width=max(2,int(3*U)))
+    # Channel logo already has its own lane; the strip carries only live figures.
+    sx=x-W*.02
     if not items:return
     count=1 if vertical else min(3,len(items));start=int(t//6)*count
     cw=(right-sx-W*.025)/count
@@ -2012,7 +2011,7 @@ def reuse_last(i, q, d, seg):
     if not LAST_FOOTAGE or not os.path.exists(LAST_FOOTAGE):
         return False
     F = max(1, int(d * 30))
-    zp = f"zoompan=z='min(1+0.0004*on,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
+    zp = f"zoompan=z='1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
     run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", LAST_FOOTAGE, "-t", f"{d:.2f}", "-an", "-vf", zp,
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
     return True
@@ -2061,7 +2060,7 @@ def emergency_background(i, q, d, seg):
             img.save(p, quality=88)
             AI_SPENT += 1
             F = max(1, int(d * 30))
-            zp = f"zoompan=z='min(1+0.0004*on,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
+            zp = f"zoompan=z='1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
             run(["ffmpeg", "-y", "-loop", "1", "-i", p, "-t", f"{d:.2f}", "-vf", zp,
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
             print(f"Scene {i + 1} background: emergency AI photo")
@@ -2087,7 +2086,7 @@ def emergency_background(i, q, d, seg):
         p = os.path.join(work, f"emg{i}.jpg")
         base.save(p, quality=88)
         F = max(1, int(d * 30))
-        zp = f"zoompan=z='min(1+0.0004*on,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
+        zp = f"zoompan=z='1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps=30,setsar=1"
         run(["ffmpeg", "-y", "-loop", "1", "-i", p, "-t", f"{d:.2f}", "-vf", zp,
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
         print(f"Scene {i + 1} background: local styled backdrop")
@@ -2128,10 +2127,10 @@ def use_my_clip(i, d, seg, clip):
     if ext == "jpg":
         photo_credits.add(clip.get("author") or "Stock")
         frames = int(d * 30) + 1
-        z = "min(1+0.0004*on,1.06)" if i % 2 == 0 else "max(1.06-0.0004*on,1)"
+        z = "1" if i % 2 == 0 else "1"
         # With only one approved image, each scene frames a different region (center, left,
         # right, upper, lower) so the video never feels frozen on a single still.
-        fx, fy = [(0.5, 0.5), (0.28, 0.42), (0.72, 0.4), (0.4, 0.7), (0.62, 0.3), (0.5, 0.62)][i % 6]
+        fx, fy = 0.5, 0.5  # static, centered
         kb = (f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},"
               f"zoompan=z='{z}':x='iw*{fx}-(iw/zoom/2)':y='ih*{fy}-(ih/zoom/2)':d={frames}:s={W}x{H}:fps=30,setsar=1")
         run(["ffmpeg", "-y", "-loop", "1", "-i", raw, "-t", f"{d:.2f}", "-vf", kb, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
@@ -2141,7 +2140,7 @@ def use_my_clip(i, d, seg, clip):
         try: L = duration(raw)
         except Exception: L = 0
         ss = (i * 3.7) % max(0.1, L - d) if L > d + 1 else 0
-        zp = "zoompan=z='min(1+0.0004*on,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'" if i % 2 == 0 else "zoompan=z='max(1.06-0.0004*on,1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+        zp = "zoompan=z='1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'" if i % 2 == 0 else "zoompan=z='1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
         run(["ffmpeg", "-y", "-ss", f"{ss:.2f}", "-stream_loop", "-1", "-i", raw, "-t", f"{d:.3f}", "-an", "-vf", vf + "," + zp + f":d=1:s={W}x{H}:fps=30,setsar=1",
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
     return True
@@ -2249,9 +2248,9 @@ def search_footage(i, q, d, seg, want_photo):
             F = max(1, int(pd * 30))
             mv = (i + k) % 4
             if mv % 2 == 0:
-                zp = "zoompan=z='min(1+0.0004*on,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                zp = "zoompan=z='1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
             else:
-                zp = "zoompan=z='max(1.06-0.0004*on,1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                zp = "zoompan=z='1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
             part = os.path.join(work, f"c{i}_{k}_{int(d * 100)}.mp4")
             run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", raw, "-t", f"{pd:.3f}", "-an", "-vf", vf + "," + zp + f":d=1:s={W}x{H}:fps=30,setsar=1",
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", part])
@@ -2272,7 +2271,7 @@ def search_footage(i, q, d, seg, want_photo):
             open(img, "wb").write(requests.get(url, timeout=60).content)
             photo_credits.add(author)
             frames = int(d * 30) + 1
-            z = "min(1+0.0004*on,1.06)" if i % 2 == 0 else "max(1.06-0.0004*on,1)"
+            z = "1" if i % 2 == 0 else "1"
             px = "iw/2-(iw/zoom/2)"
             kb = (f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},"
                   f"zoompan=z='{z}':x='{px}':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps=30,setsar=1")
@@ -2472,7 +2471,7 @@ for i, sc in enumerate(plan["scenes"]):
                 _ip = os.path.join(work, f"aibg{i}.png"); _img.convert("RGB").save(_ip)
                 _frames = int((d + 0.1) * 30) + 1
                 _kb = (f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},"
-                       f"zoompan=z='min(zoom+0.0003,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={_frames}:s={W}x{H}:fps=30,setsar=1")
+                       f"zoompan=z='1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={_frames}:s={W}x{H}:fps=30,setsar=1")
                 _bp = os.path.join(work, f"aibg{i}.mp4")
                 run(["ffmpeg", "-y", "-loop", "1", "-i", _ip, "-t", f"{d + 0.1:.2f}", "-vf", _kb,
                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", _bp])
