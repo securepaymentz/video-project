@@ -1,4 +1,4 @@
-"""stock-engine v121 (installed by Studio)
+"""stock-engine v122 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1728,6 +1728,33 @@ def round2_signature(d,v,t,p):
     if detail:round2_text(d,detail,(x,y+bh*.76,bw,bh*.22),46)
 
 
+def round2_news_ticker(img,t):
+    """Rotate approved narrated facts, never invented market quotes."""
+    items=plan.get("news_ticker") or []
+    d=ImageDraw.Draw(img)
+    x=W*.065;y=H*(.885 if vertical else .895);bh=H*(.055 if vertical else .075)
+    logo_w=W*(.30 if vertical else .21);right=W*(.82 if vertical else .95)
+    d.rectangle((x-W*.012,y-H*.008,right,y+bh+H*.008),fill=DESIGN["ground"]+(215,))
+    broadcast_text(d,"THE INFLATION",(x,y,logo_w*.92,bh*.42),34*U,DESIGN["type"]+(255,),1)
+    broadcast_text(d,"ECONOMIST",(x,y+bh*.48,logo_w*.92,bh*.42),34*U,DESIGN["type"]+(255,),1)
+    sx=x+logo_w
+    d.line((sx,y,sx,y+bh),fill=DESIGN["accent"]+(255,),width=max(2,int(3*U)))
+    if not items:return
+    count=1 if vertical else min(3,len(items));start=int(t//6)*count
+    cw=(right-sx-W*.025)/count
+    for k in range(count):
+        item=items[(start+k)%len(items)];xx=sx+W*.02+k*cw
+        if k:d.line((xx-W*.008,y,xx-W*.008,y+bh),fill=DESIGN["secondary"]+(255,),width=max(1,int(2*U)))
+        broadcast_text(d,item.get("label",""),(xx,y,cw*.92,bh*.25),26*U,DESIGN["type"]+(255,),1)
+        symbol=item.get("condition");size=bh*.40
+        if symbol:weather_icon(d,symbol,xx,y+bh*.27,size,t)
+        tx=xx+(size*1.15 if symbol else 0);tw=cw*.92-(tx-xx)
+        value=str(item.get("value",""))+" "+str(item.get("unit",""))
+        broadcast_text(d,value,(tx,y+bh*.29,tw,bh*.39),40*U,DESIGN["accent"]+(255,),1)
+        broadcast_text(d,item.get("period",""),(xx,y+bh*.74,cw*.92,bh*.23),20*U,DESIGN["type"]+(255,),1)
+    d.line((sx+W*.02,y+bh+H*.006,sx+W*.02+(right-sx-W*.02)*(t%6)/6,y+bh+H*.006),fill=DESIGN["accent"]+(255,),width=max(1,int(2*U)))
+
+
 def round2_news_text(v,t,p):
     """One spoken point at a time, never a wall of article text or a data dashboard."""
     img,d=round2_base()
@@ -1749,6 +1776,7 @@ def round2_news_text(v,t,p):
     d.rectangle((x,y,x+max(3,int(6*U)),y+bh),fill=green)
     round2_text(d,point,(x+bw*.055,y+bh*.09,bw*.89,bh*.80),78,lines=6 if vertical else 4)
     d.line((x,y+bh+H*.025,x+bw*ease(p),y+bh+H*.025),fill=accent,width=max(3,int(5*U)))
+    round2_news_ticker(img,t+float(v.get("_elapsed") or 0))
     return img
 
 
@@ -1875,7 +1903,7 @@ def render_visual(v, d, seg, i):
         return False
     # The old layouts are no longer selected in any creation path.
     fn = round2_frame
-    v = dict(v, _i=i, _opening=(i == 0))
+    v = dict(v, _i=i, _opening=(i == 0), _elapsed=t0 if PV==11 else 0)
     fdir = os.path.join(work, f"g{i}")
     os.makedirs(fdir, exist_ok=True)
     cache = {}
@@ -2632,6 +2660,9 @@ open(os.path.join(work, "subs.ass"), "w", encoding="utf-8").write(ass)
 def compact_brand_frame(source):
     """Keep the classic channel mark below captions, not over presentation headings."""
     im = source.convert("RGBA")
+    if PV==11:
+        # Animated news footer owns branding; no duplicate logo.
+        return Image.new("RGBA",(W,H),(0,0,0,0))
     if frame != "classic":
         # Preserve other frame artwork, clearing the caption/brand lane and shared badge.
         im = im.resize((W, H), Image.LANCZOS)
