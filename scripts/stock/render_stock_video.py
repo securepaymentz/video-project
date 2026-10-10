@@ -1,4 +1,4 @@
-"""stock-engine v138 (installed by Studio)
+"""stock-engine v139 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
