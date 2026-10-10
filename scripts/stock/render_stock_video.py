@@ -572,7 +572,7 @@ def ass_time(t):
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
-fs = 62 if vertical else 46
+fs = 58 if vertical else 42
 events = []
 segments, audios, credits, photo_credits = [], [], set(), set()
 
@@ -637,7 +637,8 @@ def caption_events(text, start, spoken_duration):
             rendered = " ".join((r"{\c&H8DEBD4&}" if j == active else r"{\c&HFFFFFF&}") + safe(word) for j, word in enumerate(phrase))
             # Portrait keeps captions clear of the right-side player controls.
             cx = W * (0.47 if vertical else 0.5)
-            cy = H * (0.825 if vertical else 0.86)
+            # Raised so captions clear the bottom S&P/prices bar.
+            cy = H * (0.79 if vertical else 0.80)
             tags = r"{\an5\pos(" + f"{cx:.0f},{cy:.0f}" + r")\fs" + str(size) + "}"
             t = start + (offset + active) * per
             result.append(f"Dialogue: 0,{ass_time(t)},{ass_time(t + per)},Cap,,0,0,0,,{tags}{rendered}")
