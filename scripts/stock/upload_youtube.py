@@ -20,7 +20,15 @@ body = {"snippet": {"title": (meta.get("title") or "New video")[:100], "descript
         "status": {"privacyStatus": os.environ.get("YOUTUBE_PRIVACY") or "public", "selfDeclaredMadeForKids": False}}
 req = yt.videos().insert(part="snippet,status", body=body, media_body=MediaFileUpload(video, mimetype="video/mp4", chunksize=8 * 1024 * 1024, resumable=True))
 resp = None
-while resp is None:
-    status, resp = req.next_chunk()
-    if status: print(f"Uploaded {int(status.progress() * 100)}%", flush=True)
+try:
+    while resp is None:
+        status, resp = req.next_chunk()
+        if status: print(f"Uploaded {int(status.progress() * 100)}%", flush=True)
+except Exception as e:
+    msg = str(e)
+    if any(k in msg for k in ("uploadLimitExceeded", "quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded")):
+        # The video is finished and saved as a download; only YouTube's daily limit stopped the upload.
+        print(f"::warning::YouTube daily upload limit reached - video saved for download, not uploaded. ({msg[:200]})", flush=True)
+        sys.exit(0)
+    raise
 print(f"Uploaded: https://youtu.be/{resp['id']}", flush=True)
