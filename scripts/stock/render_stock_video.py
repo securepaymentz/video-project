@@ -1,4 +1,4 @@
-"""stock-engine v132 (installed by Studio)
+"""stock-engine v135 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -2923,7 +2923,7 @@ def thumbnail_headline(title):
     safe = [c for c in clauses if 2 <= len(c.split()) <= 6 and all(n in c for n in numbers)]
     return (min(safe, key=len) if safe else title).upper()
 
-def compose_thumbnail(source, title, portrait):
+def compose_thumbnail(source, title, portrait, split=False):
     from PIL import ImageOps
     source = source.convert("RGB")
     if portrait:
@@ -2940,12 +2940,14 @@ def compose_thumbnail(source, title, portrait):
         return picture
     overlay = Image.new("RGBA", picture.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    if not portrait:
+    if not portrait and split:
+        draw.rectangle((0, 520, 1280, 720), fill=(0, 0, 0, 185))
+    elif not portrait:
         # Soft fade rather than a hard panel covering the subject.
         for x in range(760):
             alpha = round(215 * max(0, 1 - x / 760) ** .65)
             draw.line((x, 0, x, 720), fill=(0, 0, 0, alpha))
-    max_width = 620 if portrait else 560
+    max_width = 1160 if split and not portrait else (620 if portrait else 560)
     # Fit long place/subject names without dropping words from the approved hook.
     for size in range(100 if portrait else 96, 11, -1):
         font = ImageFont.truetype(FB, size)
@@ -2959,12 +2961,12 @@ def compose_thumbnail(source, title, portrait):
                 line = candidate
         if line:
             lines.append(line)
-        if len(lines) <= 4 and all(draw.textlength(text, font=font) <= max_width for text in lines) and len(lines) * (size + 14) <= (300 if portrait else 460):
+        if len(lines) <= (2 if split and not portrait else 4) and all(draw.textlength(text, font=font) <= max_width for text in lines) and len(lines) * (size + 14) <= (170 if split and not portrait else (300 if portrait else 460)):
             break
     gap = size + 14
-    top = 90 if portrait else (720 - len(lines) * gap) // 2
+    top = 90 if portrait else (530 if split else (720 - len(lines) * gap) // 2)
     for i, text in enumerate(lines):
-        x = (720 - draw.textlength(text, font=font)) / 2 if portrait else 55
+        x = ((720 if portrait else 1280) - draw.textlength(text, font=font)) / 2 if portrait or split else 55
         color = (255, 206, 70, 255) if i == len(lines) - 1 else (255, 255, 255, 255)
         draw.text((x, top + i * gap), text, font=font, fill=color, stroke_width=3, stroke_fill=(0, 0, 0, 255))
     return Image.alpha_composite(picture.convert("RGBA"), overlay).convert("RGB")
@@ -2997,6 +2999,7 @@ def make_thumbnail():
     upgrade = plan.get("thumbnail_chatgpt_2k") is True
     creator = plan.get("thumbnail_creator") or {}
     reference = None
+    character_reference = None
     if PV==12 and not upgrade:
         # No paid thumbnail fallback for recaps when the owner leaves the switch off.
         path = os.path.join(os.path.dirname(out), "thumbnail.jpg")
@@ -3011,12 +3014,29 @@ def make_thumbnail():
         avatar_response = requests.get(creator["avatar"])
         avatar_response.raise_for_status()
         reference = avatar_response.content
+        if plan.get("thumbnail_character"):
+            character_response = requests.get(plan["thumbnail_character"])
+            character_response.raise_for_status()
+            character_reference = character_response.content
         url = "https://ai.gateway.lovable.dev/v1/images/edits"
         prompt += (". Reference photo is the actual creator " + str(creator.get("name", "")) +
                    ". Preserve this exact person's face and likeness, clearly recognizable on the right half. "
                    "Show the situation supported by the approved title and spoken recap around them. "
                    "Do not invent disasters, endorsements or events. This is a YouTube thumbnail only, not a video background.")
-    if upgrade:
+        if character_reference is not None:
+            story = " ".join((str(plan.get("title", "")) + " " + str(((plan.get("scenes") or [{}])[0].get("text") or ""))).split())[:160]
+            prompt = ("Photorealistic editorial recap YouTube thumbnail, EQUAL 50/50 vertical split at the exact center. "
+                      "LEFT HALF (0-50%): original creator " + str(creator.get("name", "")) + " from reference image 2, "
+                      "with a story-relevant background behind them. "
+                      "RIGHT HALF (50-100%): our fictional studio character from reference image 1, placed inside the literal story scene "
+                      "matching the topic (for example at a gas station for gas prices, in a grocery store for eggs, at home for rent): " + story + ". "
+                      "Each person has equal visual prominence, one large recognizable face centered in their own half, "
+                      "eyes and face fully visible in the upper 70 percent. TWO SEPARATE FACES; never blend faces or identities. "
+                      "Do not reserve either half for text. Bottom 25 percent stays quiet for a headline added separately. "
+                      "Independent editorial comparison, NOT a photo of a meeting, shared activity or endorsement. "
+                      "No invented actions, fake quotes, shocked expressions, disasters, numbers, text or logos. "
+                      "Sharp realistic photography, high contrast; top-right corner clear for the real flag badge.")
+    if upgrade and character_reference is None:
         prompt += (". Professional premium US news/economy cover photography: literal story subject clearly visible on the right, "
                    "crisp detail, cinematic but realistic lighting, strong editorial contrast and restrained orange/green accents. "
                    "Keep the top-right corner uncluttered for the channel's American-flag badge, added separately. "
@@ -3026,8 +3046,12 @@ def make_thumbnail():
     def request(payload, streamed):
         if reference is not None:
             fields = {k: (str(v).lower() if isinstance(v, bool) else str(v)) for k,v in payload.items()}
+            files = {"image": ("creator.jpg", reference, avatar_response.headers.get("content-type", "image/jpeg"))}
+            if character_reference is not None:
+                files = [("image[]", ("character.webp", character_reference, character_response.headers.get("content-type", "image/webp"))),
+                         ("image[]", ("creator.jpg", reference, avatar_response.headers.get("content-type", "image/jpeg")))]
             response = requests.post(url, headers={"Authorization": "Bearer " + key}, data=fields,
-                                     files={"image": ("creator.jpg", reference, avatar_response.headers.get("content-type", "image/jpeg"))}, stream=streamed)
+                                     files=files, stream=streamed)
         else:
             response = requests.post(url, headers=headers, json=payload, stream=streamed)
         if not response.ok:
@@ -3061,7 +3085,7 @@ def make_thumbnail():
     import io
     from PIL import ImageOps
     picture = Image.open(io.BytesIO(base64.b64decode(image))).convert("RGB")
-    picture = compose_thumbnail(picture, plan.get("title", ""), vertical)
+    picture = compose_thumbnail(picture, plan.get("title", ""), vertical, split=character_reference is not None)
     if upgrade:
         picture = picture.resize((1440, 2560) if vertical else (2048, 1152), Image.Resampling.LANCZOS).convert("RGBA")
         badge_size = int(min(picture.size) * .12)
