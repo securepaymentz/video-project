@@ -1,4 +1,4 @@
-"""stock-engine v135 (installed by Studio)
+"""stock-engine v136 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -699,6 +699,7 @@ def radial(c1, c2):
 
 
 def grid(img, t, alpha=80):
+    return  # Owner rule: no decorative lines/grids over the footage.
     ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(ov)
     if PV == 0:
@@ -1543,8 +1544,7 @@ def round2_base():
     # Keep the owner's exact-subject media visible; the reference grid is only a light tint.
     img=Image.new("RGBA",(W,H),DESIGN["ground"]+(90,));d=ImageDraw.Draw(img)
     step=max(18,int(64*U))
-    for x in range(0,W,step): d.line((x,0,x,H),fill=DESIGN["secondary"]+(34,),width=1)
-    for y in range(0,H,step): d.line((0,y,W,y),fill=DESIGN["secondary"]+(34,),width=1)
+    # Owner rule: no grid lines over the footage.
     return img,ImageDraw.Draw(img)
 
 
@@ -1555,7 +1555,6 @@ def round2_text(d,text,box,size=64,color="type",lines=2):
 def round2_header(d,v):
     top=H*(.135 if v.get("_opening") and plan.get("opening_location") else .075)
     round2_text(d,v.get("headline","").upper(),(W*.065,top,W*.735,H*.10),78)
-    d.rectangle((W*.065,H*.245,W*.88,H*.245+max(3,int(6*U))),fill=DESIGN["accent"]+(255,))
 
 
 def weather_icon(d,condition,x,y,size,t):
@@ -1623,7 +1622,6 @@ def round2_weather(v,t,p):
     top=H*(.135 if v.get("_opening") and plan.get("opening_location") else .065)
     round2_text(d,headline,(x,top,W*.70,H*.095),70,lines=2)
     d.rectangle((x,y,x+bw,y+bh),fill=DESIGN["ground"]+(185,))
-    d.rectangle((x,y,x+bw*ease(p*1.6),y+max(3,int(5*U))),fill=DESIGN["accent"]+(255,))
     icon=min(bw*.28,bh*.55)
     tx=x+bw*.36;tw=bw*.60
     if has_temp:
@@ -1656,7 +1654,6 @@ def round2_prices(v,t,p):
     top=H*(.135 if v.get("_opening") and plan.get("opening_location") else .065)
     round2_text(d,str(v.get("headline") or "PRICES").upper(),(x,top,W*.70,H*.095),70,lines=2)
     d.rectangle((x,y,x+bw,y+bh),fill=DESIGN["ground"]+(185,))
-    d.rectangle((x,y,x+bw*ease(p*1.6),y+max(3,int(5*U))),fill=DESIGN["accent"]+(255,))
     if not metrics:return img
     first=metrics[0];pad=bw*.06
     round2_text(d,first.get("period"),(x+pad,y+H*.022,bw*.88,H*.034),30,lines=1)
@@ -1682,7 +1679,6 @@ def round2_signature(d,v,t,p):
     g=ease(p*1.6)
     if PV==0: # Price plate: horizontal emphasis, not a market dashboard.
         d.rectangle((x,y,x+bw*.70,y+bh*.65),fill=ground)
-        d.rectangle((x,y,x+bw*.70*g,y+max(3,int(5*U))),fill=accent)
         round2_text(d,lead,(x+bw*.03,y+bh*.07,bw*.64,bh*.50),150,color="accent" if value else "type")
     elif PV==1: # Comparison framing; do not imply a second value when none is spoken.
         d.rectangle((x,y,x+bw*.48,y+bh*.72),fill=green)
@@ -1776,7 +1772,6 @@ def round2_news_text(v,t,p):
     d.rectangle((x,y,x+bw,y+bh),fill=DESIGN["ground"]+(195,))
     d.rectangle((x,y,x+max(3,int(6*U)),y+bh),fill=green)
     round2_text(d,point,(x+bw*.055,y+bh*.09,bw*.89,bh*.80),78,lines=6 if vertical else 4)
-    d.line((x,y+bh+H*.025,x+bw*ease(p),y+bh+H*.025),fill=accent,width=max(3,int(5*U)))
     round2_news_ticker(img,t+float(v.get("_elapsed") or 0))
     return img
 
@@ -1910,7 +1905,6 @@ def round2_scene_frame(v,t,p,cache):
         detail_y=y+panel_height+H*.025 if typ=="compare" else H*.715
         round2_text(d,v["sub"],(x,detail_y,bw,H*.050),44)
     # Progressive entrance, then a restrained moving rule throughout continuous narration.
-    d.line((x,H*.775,x+bw*(.26+.02*math.sin(t*1.3)),H*.775),fill=accent,width=max(2,int(3*U)))
     img.putalpha(img.getchannel("A").point(lambda a:int(a*min(1,.55+.45*g))))
     return img
 
@@ -2176,9 +2170,9 @@ def make_scene_footage(i, q, d, seg, want_photo=False):
     chosen = list(SCENE_CLIPS or ([CUR_CLIP] if CUR_CLIP else []))
     if not chosen:
         return fill_background(i, q, d, seg)
-    # Never hold one background longer than ~5s: rotate in more approved clips for long scenes,
+    # Never hold one background longer than ~4.5s (videos first; loop the scene's clips when short): rotate in more approved clips for long scenes,
     # preferring ones about this subject, then ones already used earlier in this video (never back-to-back).
-    need = max(1, math.ceil(d / 5.0))
+    need = max(1, math.ceil(d / 4.5))
     if len(chosen) < need:
         stop = {"the", "and", "for", "with", "price", "prices", "today", "usa", "of", "in", "a", "to"}
         words = lambda t: {w for w in re.findall(r"[a-z]{3,}", str(t or "").lower()) if w not in stop}
@@ -2186,7 +2180,7 @@ def make_scene_footage(i, q, d, seg, want_photo=False):
         have = {c.get("url") for c in chosen}
         match = [c for c in MY_CLIPS if c.get("url") not in have and want & words(" ".join(str(c.get(k, "")) for k in ("label", "query", "subject", "alt")))]
         earlier = [c for c in MY_CLIPS if c.get("url") in USED_URLS and c.get("url") not in have and c not in match]
-        extra = match + earlier
+        extra = sorted(match, key=lambda c: c.get("kind") != "video") + earlier
         base = list(chosen)
         k = 0
         while len(chosen) < need:
