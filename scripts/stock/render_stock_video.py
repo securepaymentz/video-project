@@ -1,4 +1,4 @@
-"""stock-engine v139 (installed by Studio)
+"""stock-engine v140 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1985,10 +1985,10 @@ def render_visual(v, d, seg, i):
     if not has_bg:
         has_bg = fill_background(i, v.get("query"), d + 0.1, bg)
     if has_bg:
-        bg_in = ["-i", bg]
         remember_footage(bg)
     elif not emergency_background(i, v.get("query"), d + 0.1, bg):
         raise RuntimeError(f"Scene {i + 1}: no photo or video could be downloaded at all (stock sites unreachable). Retry in a few minutes.")
+    bg_in = ["-i", bg]
     fc = (f"[0:v]scale={W}:{H},setsar=1,colorlevels=romax=0.92:gomax=0.92:bomax=0.92[b];"
           f"[1:v]format=rgba,tpad=stop_mode=clone:stop_duration={hold + 0.1:.2f}[g];"
           f"[b][g]overlay=0:0:format=auto,fps=30,format=yuv420p[o]")
@@ -2230,6 +2230,8 @@ def make_scene_footage(i, q, d, seg, want_photo=False):
     for k, clip in enumerate(chosen):
         part = os.path.join(work, f"selected{i}_{k}_{int(d * 100)}.mp4")
         u = clip.get("url")
+        if "REPEATS" not in globals():
+            globals()["REPEATS"] = {}
         var = REPEATS.get(u, 0)
         REPEATS[u] = var + 1
         try:
