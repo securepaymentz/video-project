@@ -1,4 +1,4 @@
-"""stock-engine v140 (installed by Studio)
+"""stock-engine v141 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -2992,7 +2992,8 @@ def compose_thumbnail(source, title, portrait, split=False):
     top = 90 if portrait else (530 if split else (720 - len(lines) * gap) // 2)
     for i, text in enumerate(lines):
         x = ((720 if portrait else 1280) - draw.textlength(text, font=font)) / 2 if portrait or split else 55
-        color = (255, 206, 70, 255) if i == len(lines) - 1 else (255, 255, 255, 255)
+        # Split recap covers: the whole headline is bold gold on the dark bar, like the approved example.
+        color = (255, 206, 70, 255) if split or i == len(lines) - 1 else (255, 255, 255, 255)
         draw.text((x, top + i * gap), text, font=font, fill=color, stroke_width=3, stroke_fill=(0, 0, 0, 255))
     return Image.alpha_composite(picture.convert("RGBA"), overlay).convert("RGB")
 
@@ -3033,7 +3034,7 @@ def make_thumbnail():
         picture = compose_thumbnail(picture, plan.get("title", ""), vertical)
         picture.save(os.path.join(os.path.dirname(out), "thumbnail.jpg"), quality=85, optimize=True)
         return
-    if PV==12 and upgrade:
+    if upgrade and (PV==12 or creator.get("name")):
         if not creator.get("avatar"):
             raise RuntimeError("YouTube thumbnail needs the creator's real reference photo; no image was generated")
         avatar_response = requests.get(creator["avatar"])
@@ -3050,13 +3051,15 @@ def make_thumbnail():
                    "Do not invent disasters, endorsements or events. This is a YouTube thumbnail only, not a video background.")
         if character_reference is not None:
             story = " ".join((str(plan.get("title", "")) + " " + str(((plan.get("scenes") or [{}])[0].get("text") or ""))).split())[:160]
-            prompt = ("Photorealistic editorial recap YouTube thumbnail, EQUAL 50/50 vertical split at the exact center. "
+            prompt = ("Photorealistic editorial recap YouTube thumbnail, EQUAL 50/50 vertical split at the exact center, "
+                      "looking like two real smartphone photos side by side, not an illustration. "
                       "LEFT HALF (0-50%): original creator " + str(creator.get("name", "")) + " from reference image 2, "
                       "with a story-relevant background behind them. "
                       "RIGHT HALF (50-100%): our fictional studio character from reference image 1, placed inside the literal story scene "
                       "matching the topic (for example at a gas station for gas prices, in a grocery store for eggs, at home for rent): " + story + ". "
-                      "Each person has equal visual prominence, one large recognizable face centered in their own half, "
+                      "Each person has equal visual prominence, one large recognizable head-and-shoulders face centered in their own half, "
                       "eyes and face fully visible in the upper 70 percent. TWO SEPARATE FACES; never blend faces or identities. "
+                      "Natural realistic skin, hair and lighting on both halves; consistent photo grain; no painted or cartoon look. "
                       "Do not reserve either half for text. Bottom 25 percent stays quiet for a headline added separately. "
                       "Independent editorial comparison, NOT a photo of a meeting, shared activity or endorsement. "
                       "No invented actions, fake quotes, shocked expressions, disasters, numbers, text or logos. "
