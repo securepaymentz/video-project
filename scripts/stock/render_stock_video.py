@@ -1,4 +1,4 @@
-"""stock-engine v136 (installed by Studio)
+"""stock-engine v138 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -580,6 +580,29 @@ segments, audios, credits, photo_credits = [], [], set(), set()
 import math
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 FB = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+# Safety net for every design: a single text line never runs off the frame.
+# Lines wider than the safe area shrink; on-canvas lines are nudged back inside.
+_orig_draw_text = ImageDraw.ImageDraw.text
+def _safe_draw_text(self, xy, text, fill=None, font=None, *a, **k):
+    try:
+        if font is not None and isinstance(text, str) and text and "\n" not in text and len(text) <= 160 and hasattr(font, "getlength"):
+            W = self.im.size[0]; mg = max(4, int(W * 0.035)); sw = int(k.get("stroke_width") or 0)
+            maxw = W - 2 * mg
+            if font.getlength(text) + 2 * sw > maxw and hasattr(font, "font_variant"):
+                s = int(font.size)
+                while s > 14 and font.getlength(text) + 2 * sw > maxw:
+                    s = max(14, int(s * 0.92)); font = font.font_variant(size=s)
+            anchor = k.get("anchor") or "la"
+            x, y = float(xy[0]), float(xy[1]); L = font.getlength(text) + 2 * sw
+            left = x if anchor[0] == "l" else (x - L / 2 if anchor[0] == "m" else x - L)
+            if 0 <= left < W and L <= maxw + 1:
+                nl = min(max(left, mg), W - mg - L)
+                x += nl - left
+            xy = (x, y)
+    except Exception:
+        pass
+    return _orig_draw_text(self, xy, text, fill, font, *a, **k)
+ImageDraw.ImageDraw.text = _safe_draw_text
 FSERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
 OPENAI = os.environ.get("OPENAI_API_KEY", "").strip()
 IMG_MODEL = os.environ.get("OPENAI_IMAGE_MODEL", "").strip() or "gpt-image-1-mini"
@@ -1549,6 +1572,7 @@ def round2_base():
 
 
 def round2_text(d,text,box,size=64,color="type",lines=2):
+    if not str(text or "").strip():return
     broadcast_text(d,str(text or ""),box,size*U,DESIGN[color]+(255,),lines)
 
 
@@ -1675,7 +1699,11 @@ def round2_signature(d,v,t,p):
     accent=DESIGN["accent"]+(255,);green=DESIGN["secondary"]+(205,)
     ground=DESIGN["ground"]+(185,);white=DESIGN["type"]+(255,)
     value=str(v.get("value") or "");headline=str(v.get("headline") or "")
-    lead=value or headline;detail=str(v.get("sub") or "")
+    detail=str(v.get("sub") or "")
+    # The headline is already drawn at the top; never repeat it inside the panel.
+    if value:lead=value
+    elif detail and detail.strip().lower()!=headline.strip().lower():lead,detail=detail,""
+    else:return
     g=ease(p*1.6)
     if PV==0: # Price plate: horizontal emphasis, not a market dashboard.
         d.rectangle((x,y,x+bw*.70,y+bh*.65),fill=ground)
@@ -1695,8 +1723,7 @@ def round2_signature(d,v,t,p):
         round2_text(d,lead,(x+bw*.05,y+bh*.05,bw*.90,bh*.38),110)
         d.rectangle((x+bw*.75,y+bh*.55,x+bw,y+bh*.58),fill=green)
     elif PV==4: # Then/now hinge: one supported fact, never an invented past side.
-        d.rectangle((x+bw*.12,y,x+bw*.88,y+bh*.64),fill=ground,outline=green,width=max(2,int(3*U)))
-        d.line((x+bw*.50,y,x+bw*.50,y+bh*.64),fill=accent,width=max(2,int(3*U)))
+        d.rectangle((x+bw*.12,y,x+bw*.88,y+bh*.64),fill=ground)
         round2_text(d,lead,(x+bw*.17,y+bh*.08,bw*.66,bh*.47),120)
     elif PV==5: # Verdict composition; no manufactured myth or attributed belief.
         d.rectangle((x,y,x+bw*.035,y+bh*.68),fill=green)
@@ -1707,7 +1734,7 @@ def round2_signature(d,v,t,p):
         d.rectangle((x,y,x+bw*.04,y+bh*.62),fill=accent)
         round2_text(d,lead,(x+bw*.08,y+bh*.08,bw*.70,bh*.45),130)
     elif PV==7: # Market readout: compact grid sized to the actual single fact.
-        d.rectangle((x,y,x+bw*.61,y+bh*.57),fill=ground,outline=green,width=max(2,int(3*U)))
+        d.rectangle((x,y,x+bw*.61,y+bh*.57),fill=ground)
         round2_text(d,lead,(x+bw*.035,y+bh*.05,bw*.54,bh*.43),145,color="accent" if value else "type")
         d.line((x,y+bh*.64,x+bw*.61,y+bh*.64),fill=green,width=max(2,int(3*U)))
     elif PV==8: # Documentary chapter, no invented chapter/data number.
@@ -2131,30 +2158,32 @@ def download_retry(url, path, tries=5):
     raise last or Exception("download failed")
 
 
-def use_my_clip(i, d, seg, clip):
-    """Render the creator's hand-picked clip/photo for this scene (no stock search at all)."""
+VARIANT_FRAMES = [(1.0, 0.5, 0.5), (1.14, 0.38, 0.5), (1.14, 0.62, 0.5), (1.1, 0.5, 0.42), (1.18, 0.5, 0.56)]
+
+
+def use_my_clip(i, d, seg, clip, var=0):
+    """Render the creator's hand-picked clip/photo. var > 0 means this clip is repeated in the
+    video: each repeat uses a different static framing (and a different start point for videos)
+    so a short clip pool still looks like new shots, never the same frame twice in a row."""
+    z, fx, fy = VARIANT_FRAMES[var % len(VARIANT_FRAMES)]
     vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,setsar=1"
     ext = "jpg" if clip.get("kind") == "photo" else "mp4"
-    raw = os.path.join(work, f"my{i}_{int(d * 100)}.{ext}")
+    raw = os.path.join(work, f"my{i}_{var}_{int(d * 100)}.{ext}")
     download_retry(clip["url"], raw)
     time.sleep(0.4)
     if ext == "jpg":
         photo_credits.add(clip.get("author") or "Stock")
         frames = int(d * 30) + 1
-        z = "1" if i % 2 == 0 else "1"
-        # With only one approved image, each scene frames a different region (center, left,
-        # right, upper, lower) so the video never feels frozen on a single still.
-        fx, fy = 0.5, 0.5  # static, centered
         kb = (f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},"
               f"zoompan=z='{z}':x='iw*{fx}-(iw/zoom/2)':y='ih*{fy}-(ih/zoom/2)':d={frames}:s={W}x{H}:fps=30,setsar=1")
         run(["ffmpeg", "-y", "-loop", "1", "-i", raw, "-t", f"{d:.2f}", "-vf", kb, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
     else:
         credits.add(clip.get("author") or "Stock")
-        # different start point each time the same clip is reused, so repeats look fresh
         try: L = duration(raw)
         except Exception: L = 0
-        ss = (i * 3.7) % max(0.1, L - d) if L > d + 1 else 0
-        zp = "zoompan=z='1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'" if i % 2 == 0 else "zoompan=z='1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+        span = max(0.1, L - d)
+        ss = ((i * 3.7) + var * span * 0.37) % span if L > d + 1 else 0
+        zp = f"zoompan=z='{z}':x='iw*{fx}-(iw/zoom/2)':y='ih*{fy}-(ih/zoom/2)'"
         run(["ffmpeg", "-y", "-ss", f"{ss:.2f}", "-stream_loop", "-1", "-i", raw, "-t", f"{d:.3f}", "-an", "-vf", vf + "," + zp + f":d=1:s={W}x{H}:fps=30,setsar=1",
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", seg])
     return True
@@ -2192,19 +2221,19 @@ def make_scene_footage(i, q, d, seg, want_photo=False):
             chosen.append(nxt)
             if k > need * 4:
                 break
+    # Too few clips: still cut every ~4.5s, reusing the same clips as varied shots.
+    while len(chosen) < need:
+        chosen.append(chosen[len(chosen) % max(1, len(set(c.get("url") for c in chosen)))])
     for c in chosen:
         USED_URLS.add(c.get("url"))
-    if len(chosen) == 1:
-        try:
-            return use_my_clip(i, d, seg, chosen[0])
-        except Exception as e:
-            print("Approved clip unavailable after retries; filling instead:", e)
-            return fill_background(i, q, d, seg)
     parts = []
     for k, clip in enumerate(chosen):
         part = os.path.join(work, f"selected{i}_{k}_{int(d * 100)}.mp4")
+        u = clip.get("url")
+        var = REPEATS.get(u, 0)
+        REPEATS[u] = var + 1
         try:
-            use_my_clip(i * 100 + k, d / len(chosen), part, clip)
+            use_my_clip(i * 100 + k, d / len(chosen), part, clip, var)
             parts.append(part)
         except Exception as e:
             print("Skipping unavailable clip:", e)
