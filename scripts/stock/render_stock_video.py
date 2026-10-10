@@ -1,4 +1,4 @@
-"""stock-engine v130 (installed by Studio)
+"""stock-engine v132 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1782,6 +1782,24 @@ def round2_news_text(v,t,p):
 
 
 def round2_frame(v,t,p,cache):
+    global PV,W,U
+    if PV!=12:return round2_scene_frame(v,t,p,cache)
+    original_pv,original_w,original_u=PV,W,U
+    scene_variant=int(v.get("_variant",12))%13
+    try:
+        if scene_variant in (11,12):
+            return round2_news_text(v,t,p)
+        # Render all designs in a compact left lane, leaving the creator unobstructed.
+        PV=scene_variant;W=int(original_w*.63);U=original_u*.78
+        compact=round2_scene_frame(v,t,p,cache)
+    finally:
+        PV,W,U=original_pv,original_w,original_u
+    img=Image.new("RGBA",(W,H),(0,0,0,0));img.alpha_composite(compact,(0,0))
+    round2_news_ticker(img,t+float(v.get("_elapsed") or 0))
+    return img
+
+
+def round2_scene_frame(v,t,p,cache):
     if PV in (11,12) or v.get("type")=="news_text":return round2_news_text(v,t,p)
     if v.get("type")=="weather":return round2_weather(v,t,p)
     if v.get("type")=="price_readout":return round2_prices(v,t,p)
@@ -1904,7 +1922,8 @@ def render_visual(v, d, seg, i):
         return False
     # The old layouts are no longer selected in any creation path.
     fn = round2_frame
-    v = dict(v, _i=i, _opening=(i == 0), _elapsed=t0 if PV==11 else 0)
+    scene_variant = plan.get("scenes", [])[i].get("presentation_variant", 12) if PV==12 and i<len(plan.get("scenes", [])) else PV
+    v = dict(v, _i=i, _opening=(i == 0), _variant=scene_variant, _elapsed=t0 if PV in (11,12) else 0)
     fdir = os.path.join(work, f"g{i}")
     os.makedirs(fdir, exist_ok=True)
     cache = {}
@@ -1914,7 +1933,7 @@ def render_visual(v, d, seg, i):
     try:
         for k in range(anim):
             t = k / graphic_fps
-            p = min(1.0, t / max(d, .1)) if PV==11 else min(1.0, (0.55 if i == 0 else 0.08) + t / 1.4)
+            p = min(1.0, t / max(d, .1)) if PV in (11,12) else min(1.0, (0.55 if i == 0 else 0.08) + t / 1.4)
             fr = fn(v, t, p, cache)
             # Layouts without native subtext still show the narrated unit/context.
             if fn != round2_frame and v.get("sub") and typ in ("chart", "list", "compare", "ranking", "timeline", "receipt", "chapter"):
@@ -2959,7 +2978,7 @@ def thumbnail_request(prompt, upgrade):
 # Generate one topic-specific thumbnail from the approved title, not a generic scene.
 def make_thumbnail():
     key = os.environ.get("LOVABLE_API_KEY", "").strip()
-    if not key:
+    if not key and not (PV==12 and plan.get("thumbnail_chatgpt_2k") is not True):
         raise RuntimeError("AI image key is missing; thumbnail was not generated")
     prompt = ("Create a photorealistic editorial YouTube cover readable instantly at 160 pixels wide. "
               "Show the exact literal subject and supported US location, not a generic economy scene. "
@@ -2976,6 +2995,27 @@ def make_thumbnail():
               ". Opening scene: " + str((plan.get("scenes") or [{}])[0].get("text", ""))[:200])
     url = "https://ai.gateway.lovable.dev/v1/images/generations"
     upgrade = plan.get("thumbnail_chatgpt_2k") is True
+    creator = plan.get("thumbnail_creator") or {}
+    reference = None
+    if PV==12 and not upgrade:
+        # No paid thumbnail fallback for recaps when the owner leaves the switch off.
+        path = os.path.join(os.path.dirname(out), "thumbnail.jpg")
+        subprocess.run(["ffmpeg", "-y", "-i", out, "-frames:v", "1", path], check=True, capture_output=True)
+        picture = Image.open(path).convert("RGB")
+        picture = compose_thumbnail(picture, plan.get("title", ""), vertical)
+        picture.save(os.path.join(os.path.dirname(out), "thumbnail.jpg"), quality=85, optimize=True)
+        return
+    if PV==12 and upgrade:
+        if not creator.get("avatar"):
+            raise RuntimeError("YouTube thumbnail needs the creator's real reference photo; no image was generated")
+        avatar_response = requests.get(creator["avatar"])
+        avatar_response.raise_for_status()
+        reference = avatar_response.content
+        url = "https://ai.gateway.lovable.dev/v1/images/edits"
+        prompt += (". Reference photo is the actual creator " + str(creator.get("name", "")) +
+                   ". Preserve this exact person's face and likeness, clearly recognizable on the right half. "
+                   "Show the situation supported by the approved title and spoken recap around them. "
+                   "Do not invent disasters, endorsements or events. This is a YouTube thumbnail only, not a video background.")
     if upgrade:
         prompt += (". Professional premium US news/economy cover photography: literal story subject clearly visible on the right, "
                    "crisp detail, cinematic but realistic lighting, strong editorial contrast and restrained orange/green accents. "
@@ -2984,7 +3024,12 @@ def make_thumbnail():
     body = thumbnail_request(prompt, upgrade)
     headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
     def request(payload, streamed):
-        response = requests.post(url, headers=headers, json=payload, stream=streamed)
+        if reference is not None:
+            fields = {k: (str(v).lower() if isinstance(v, bool) else str(v)) for k,v in payload.items()}
+            response = requests.post(url, headers={"Authorization": "Bearer " + key}, data=fields,
+                                     files={"image": ("creator.jpg", reference, avatar_response.headers.get("content-type", "image/jpeg"))}, stream=streamed)
+        else:
+            response = requests.post(url, headers=headers, json=payload, stream=streamed)
         if not response.ok:
             try: message = response.json().get("error", {}).get("message") or response.text[:300]
             except Exception: message = response.text[:300]
@@ -3001,9 +3046,9 @@ def make_thumbnail():
             kind = event.get("type", "")
             if kind == "error":
                 raise RuntimeError("Thumbnail generation failed: " + str((event.get("error") or {}).get("message") or "Image generation denied"))
-            if kind in ("image_generation.partial_image", "image_generation.completed"):
+            if kind in ("image_generation.partial_image", "image_generation.completed", "image_edit.partial_image", "image_edit.completed"):
                 saw_event = True
-                if kind == "image_generation.completed":
+                if kind in ("image_generation.completed", "image_edit.completed"):
                     finished, image = True, event.get("b64_json")
     finally:
         response.close()
