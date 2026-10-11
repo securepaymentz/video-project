@@ -1,4 +1,4 @@
-"""stock-engine v141 (installed by Studio)
+"""stock-engine v142 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1786,7 +1786,7 @@ def round2_news_text(v,t,p):
     x=W*.065;bw=W*(.87 if vertical else (.55 if PV==12 else .62))
     top=H*(.135 if v.get("_opening") and plan.get("opening_location") else .075)
     accent=DESIGN["accent"]+(255,);green=DESIGN["secondary"]+(220,)
-    round2_text(d,v.get("headline",""),(x,top,W*.72,H*.10),64,lines=2)
+    round2_text(d,v.get("headline",""),(x,top,W*.72,H*.10),72,lines=2)
     # Split only at sentence boundaries, preserving every approved spoken word.
     text=" ".join(str(s) for s in (v.get("items") or [v.get("sub") or v.get("headline") or ""]))
     sentences=[s.strip() for s in re.split(r"(?<=[.!?])\s+",text) if s.strip()] or [text]
@@ -1796,10 +1796,10 @@ def round2_news_text(v,t,p):
         if at<before+weight:
             point=sentence;break
         before+=weight
-    y=H*.28;bh=H*(.32 if vertical else .38)
+    y=H*.28;bh=H*(.42 if vertical else .44)
     d.rectangle((x,y,x+bw,y+bh),fill=DESIGN["ground"]+(195,))
     d.rectangle((x,y,x+max(3,int(6*U)),y+bh),fill=green)
-    round2_text(d,point,(x+bw*.055,y+bh*.09,bw*.89,bh*.80),78,lines=6 if vertical else 4)
+    round2_text(d,point,(x+bw*.055,y+bh*.09,bw*.89,bh*.80),92,lines=6 if vertical else 4)
     round2_news_ticker(img,t+float(v.get("_elapsed") or 0))
     return img
 
@@ -1812,8 +1812,14 @@ def round2_frame(v,t,p,cache):
     try:
         if scene_variant in (11,12):
             return round2_news_text(v,t,p)
+        # Long spoken narration without a figure reads better as the full-width
+        # news-text panel than squeezed into a compact fact plate.
+        if not str(v.get("value") or "").strip() and not v.get("items"):
+            spoken=" ".join(str(s) for s in ([v.get("sub")] if v.get("sub") else [])+[v.get("headline") or ""])
+            if len(spoken.strip())>90:
+                return round2_news_text(v,t,p)
         # Render all designs in a compact left lane, leaving the creator unobstructed.
-        PV=scene_variant;W=int(original_w*.63);U=original_u*.78
+        PV=scene_variant;W=int(original_w*.63);U=original_u*.9
         compact=round2_scene_frame(v,t,p,cache)
     finally:
         PV,W,U=original_pv,original_w,original_u
@@ -2035,6 +2041,8 @@ def reuse_selected(i, q, d, seg):
     want = words(" ".join([str(q or ""), SCENE_SUBJECT or ""]))
     scored = [(len(want & words(" ".join(str(c.get(k, "")) for k in ("label", "query", "subject", "alt")))), c) for c in MY_CLIPS]
     pool = [c for n, c in sorted(scored, key=lambda x: -x[0]) if n > 0 and c.get("url") != avoid] or [c for n, c in scored if n > 0]
+    # Prefer orientation-matching clips (vertical Shorts clips in 9:16 videos), keeping subject-match order.
+    pool.sort(key=lambda c: (c.get("vertical") is not None and c.get("vertical") != vertical,))
     if not pool:
         print("No selected clip matches", sorted(want), "- skipping unrelated reuse")
         return False
@@ -2210,7 +2218,8 @@ def make_scene_footage(i, q, d, seg, want_photo=False):
         have = {c.get("url") for c in chosen}
         match = [c for c in MY_CLIPS if c.get("url") not in have and want & words(" ".join(str(c.get(k, "")) for k in ("label", "query", "subject", "alt")))]
         earlier = [c for c in MY_CLIPS if c.get("url") in USED_URLS and c.get("url") not in have and c not in match]
-        extra = sorted(match, key=lambda c: c.get("kind") != "video") + earlier
+        # Vertical Shorts clips fit 9:16 frames best; horizontal clips fit 16:9 (unknown orientation stays eligible).
+        extra = sorted(match, key=lambda c: (c.get("vertical") is not None and c.get("vertical") != vertical, c.get("kind") != "video")) + earlier
         base = list(chosen)
         k = 0
         while len(chosen) < need:
