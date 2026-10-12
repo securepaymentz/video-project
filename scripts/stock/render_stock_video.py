@@ -1,4 +1,4 @@
-"""stock-engine v143 (installed by Studio)
+"""stock-engine v144 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -2137,8 +2137,16 @@ def emergency_background(i, q, d, seg):
     of the exact subject, else a locally rendered styled presentation backdrop.
     The scene's graphic/captions draw on top, so the video always finishes."""
     global AI_SPENT
-    # Never turn a missing subject into an image-free Short or buy a replacement.
+    # Shorts never go image-free and never buy a replacement: reuse this video's own
+    # approved footage (last matching background, then any selected clip) before giving up.
     if vertical:
+        for step in (reuse_last, reuse_selected):
+            try:
+                if step(i, q, d, seg):
+                    print(f"Scene {i + 1} background: reused approved footage ({step.__name__})")
+                    return True
+            except Exception as e:
+                print(f"{step.__name__} failed:", e)
         raise RuntimeError(f"Scene {i + 1}: add a working matching photo or video. Shorts cannot render without exact-subject media.")
     # Paid AI photo only when the owner authorized category images and budget remains.
     if (plan.get("category_images") or plan.get("ai_presentations")) and AI_SPENT < plan.get("image_budget", 20):
