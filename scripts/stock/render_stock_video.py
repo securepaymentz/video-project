@@ -1,4 +1,4 @@
-"""stock-engine v142 (installed by Studio)
+"""stock-engine v143 (installed by Studio)
 Builds a video from Pexels clips + narration + burned-in subtitles.
 Usage: PLAN=<base64 json> python render_stock_video.py out.mp4
 """
@@ -1804,8 +1804,44 @@ def round2_news_text(v,t,p):
     return img
 
 
+def shorts_points(v):
+    """Paginate approved words, not a squeezed landscape table or invented summary."""
+    source=v.get("items") or [v.get("sub") or v.get("value") or v.get("headline") or ""]
+    points=[]
+    for item in source:
+        words=str(item).split()
+        for start in range(0,len(words),9):
+            points.append(" ".join(words[start:start+9]))
+    return points
+
+
+def round2_shorts(v,t,p):
+    """Full-width phone-readable facts with an unobstructed subject and caption lane."""
+    img,d=round2_base();x=W*.065;bw=W*.76
+    top=H*(.135 if v.get("_opening") and plan.get("opening_location") else .09)
+    round2_text(d,v.get("headline",""),(x,top,bw,H*.13),82,lines=3)
+    points=shorts_points(v)
+    if points:
+        weights=[max(1,len(point.split())) for point in points]
+        at=min(.999,max(0,p))*sum(weights);before=0;point=points[-1]
+        for candidate,weight in zip(points,weights):
+            if at<before+weight:
+                point=candidate;break
+            before+=weight
+        # Only the current fact gets a backing; most of the real media stays visible.
+        y=H*.32;bh=H*.25
+        d.rectangle((x-W*.015,y-H*.015,x+bw+W*.015,y+bh+H*.015),fill=DESIGN["ground"]+(175,))
+        # Hyphenated labels may wrap at their hyphen instead of shrinking the entire fact.
+        round2_text(d,point.replace("-","- "),(x,y,bw,bh),96,lines=5)
+    round2_news_ticker(img,t+float(v.get("_elapsed") or 0))
+    return img
+
+
 def round2_frame(v,t,p,cache):
     global PV,W,U
+    # Portrait never enters the compact 63%-width creator column.
+    if vertical and v.get("type") not in ("weather","price_readout"):
+        return round2_shorts(v,t,p)
     if PV!=12:return round2_scene_frame(v,t,p,cache)
     original_pv,original_w,original_u=PV,W,U
     scene_variant=int(v.get("_variant",12))%13
@@ -1961,7 +1997,7 @@ def render_visual(v, d, seg, i):
     try:
         for k in range(anim):
             t = k / graphic_fps
-            p = min(1.0, t / max(d, .1)) if PV in (11,12) else min(1.0, (0.55 if i == 0 else 0.08) + t / 1.4)
+            p = min(1.0, t / max(d, .1)) if vertical or PV in (11,12) else min(1.0, (0.55 if i == 0 else 0.08) + t / 1.4)
             fr = fn(v, t, p, cache)
             # Layouts without native subtext still show the narrated unit/context.
             if fn != round2_frame and v.get("sub") and typ in ("chart", "list", "compare", "ranking", "timeline", "receipt", "chapter"):
@@ -2086,7 +2122,7 @@ def fallback_visual(text, subject=None):
 
 def fill_background(i, q, d, seg):
     """Never fail a scene for missing media: approved reuse first when the owner picked clips, else stock."""
-    for step in (reuse_selected, reuse_last):
+    for step in (reuse_selected,):
         try:
             if step(i, q, d, seg):
                 print(f"Scene {i + 1} background filled by {step.__name__}")
@@ -2101,6 +2137,9 @@ def emergency_background(i, q, d, seg):
     of the exact subject, else a locally rendered styled presentation backdrop.
     The scene's graphic/captions draw on top, so the video always finishes."""
     global AI_SPENT
+    # Never turn a missing subject into an image-free Short or buy a replacement.
+    if vertical:
+        raise RuntimeError(f"Scene {i + 1}: add a working matching photo or video. Shorts cannot render without exact-subject media.")
     # Paid AI photo only when the owner authorized category images and budget remains.
     if (plan.get("category_images") or plan.get("ai_presentations")) and AI_SPENT < plan.get("image_budget", 20):
         try:
@@ -2217,7 +2256,7 @@ def make_scene_footage(i, q, d, seg, want_photo=False):
         want = words(" ".join([str(q or ""), SCENE_SUBJECT or ""]))
         have = {c.get("url") for c in chosen}
         match = [c for c in MY_CLIPS if c.get("url") not in have and want & words(" ".join(str(c.get(k, "")) for k in ("label", "query", "subject", "alt")))]
-        earlier = [c for c in MY_CLIPS if c.get("url") in USED_URLS and c.get("url") not in have and c not in match]
+        earlier = []  # Prior scenes are not evidence that a clip matches this subject.
         # Vertical Shorts clips fit 9:16 frames best; horizontal clips fit 16:9 (unknown orientation stays eligible).
         extra = sorted(match, key=lambda c: (c.get("vertical") is not None and c.get("vertical") != vertical, c.get("kind") != "video")) + earlier
         base = list(chosen)
@@ -2234,6 +2273,15 @@ def make_scene_footage(i, q, d, seg, want_photo=False):
     # Too few clips: still cut every ~4.5s, reusing the same clips as varied shots.
     while len(chosen) < need:
         chosen.append(chosen[len(chosen) % max(1, len(set(c.get("url") for c in chosen)))])
+    if vertical:
+        # Preserve approved subject matches while alternating media kinds when available.
+        videos=[c for c in chosen if c.get("kind") != "photo"]
+        photos=[c for c in chosen if c.get("kind") == "photo"]
+        mixed=[]
+        while videos or photos:
+            if videos:mixed.append(videos.pop(0))
+            if photos:mixed.append(photos.pop(0))
+        chosen=mixed
     for c in chosen:
         USED_URLS.add(c.get("url"))
     parts = []
